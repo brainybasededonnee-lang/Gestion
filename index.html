@@ -1,0 +1,2954 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0f172a">
+<title>BRAINY STORE — Gestion de boutique</title>
+<meta name="description" content="BRAINY STORE - Logiciel professionnel de gestion de boutique">
+
+<!-- ==========================================================
+     BRAINY STORE — Application mono-fichier
+     Firebase (Auth + Firestore) + Cloudflare R2 (fichiers)
+     Voir la documentation complète en fin de fichier (commentaires)
+     ========================================================== -->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+
+<style>
+:root{
+  --bg:#f4f6f8;
+  --surface:#ffffff;
+  --surface-2:#eef1f4;
+  --border:#e1e6eb;
+  --text:#151a21;
+  --text-dim:#5b6673;
+  --text-faint:#8b95a1;
+  --sidebar:#0e1621;
+  --sidebar-hover:#1a2432;
+  --sidebar-text:#aab4c0;
+  --sidebar-text-active:#ffffff;
+  --primary:#0f6e66;
+  --primary-dark:#0b544e;
+  --primary-light:#e4f3f1;
+  --accent:#c8792a;
+  --accent-light:#fbecd9;
+  --danger:#c1382f;
+  --danger-light:#fbe8e6;
+  --success:#1c8a52;
+  --success-light:#e5f6ec;
+  --warning:#b9840f;
+  --warning-light:#fdf3dd;
+  --info:#2065ba;
+  --info-light:#e6f0fb;
+  --radius:10px;
+  --radius-sm:6px;
+  --shadow:0 1px 2px rgba(15,23,32,.06), 0 1px 8px rgba(15,23,32,.05);
+  --shadow-lg:0 12px 32px rgba(15,23,32,.16);
+  font-size:15px;
+}
+[data-theme="dark"]{
+  --bg:#0b1119;
+  --surface:#121a25;
+  --surface-2:#1a2432;
+  --border:#232f3f;
+  --text:#e7ecf1;
+  --text-dim:#9aa7b6;
+  --text-faint:#6b7889;
+  --sidebar:#080d14;
+  --sidebar-hover:#141d29;
+  --primary-light:#0f2b28;
+  --accent-light:#2a2013;
+  --danger-light:#2b1715;
+  --success-light:#122a1c;
+  --warning-light:#2a2210;
+  --info-light:#132638;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{height:100%;}
+body{
+  font-family:'Inter',system-ui,-apple-system,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+.mono{font-family:'JetBrains Mono',monospace;}
+button{font-family:inherit; cursor:pointer;}
+input,select,textarea{font-family:inherit; font-size:14px;}
+a{color:inherit;}
+::-webkit-scrollbar{width:9px; height:9px;}
+::-webkit-scrollbar-thumb{background:var(--border); border-radius:8px;}
+::-webkit-scrollbar-track{background:transparent;}
+
+/* ---------- Loading screen ---------- */
+#boot-screen{
+  position:fixed; inset:0; background:var(--sidebar); display:flex; flex-direction:column;
+  align-items:center; justify-content:center; z-index:9999; gap:18px;
+}
+.boot-logo{font-size:34px; font-weight:800; color:#fff; letter-spacing:-.5px;}
+.boot-logo span{color:var(--accent);}
+.spinner{
+  width:34px; height:34px; border-radius:50%;
+  border:3px solid rgba(255,255,255,.15); border-top-color:var(--accent);
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+.boot-sub{color:#7c8798; font-size:13px;}
+
+/* ---------- Login ---------- */
+#login-screen{
+  position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+  background:linear-gradient(160deg,#0e1621 0%,#152234 55%,#0e1621 100%);
+  z-index:500; padding:20px;
+}
+.login-card{
+  width:100%; max-width:400px; background:var(--surface); border-radius:16px;
+  box-shadow:var(--shadow-lg); padding:38px 34px 30px; animation:cardIn .35s ease;
+}
+@keyframes cardIn{from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);}}
+.login-logo{display:flex; align-items:center; gap:10px; justify-content:center; margin-bottom:6px;}
+.login-logo .mark{
+  width:42px; height:42px; border-radius:10px; background:var(--primary);
+  display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:19px;
+}
+.login-logo .name{font-size:21px; font-weight:800; letter-spacing:-.3px;}
+.login-logo .name span{color:var(--accent);}
+.login-sub{text-align:center; color:var(--text-dim); font-size:13.5px; margin:2px 0 26px;}
+.field{margin-bottom:16px;}
+.field label{display:block; font-size:12.5px; font-weight:600; color:var(--text-dim); margin-bottom:6px;}
+.field-input-wrap{position:relative;}
+.field input{
+  width:100%; padding:11px 13px; border:1.5px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--surface); color:var(--text); font-size:14.5px; transition:border-color .15s;
+}
+.field input:focus{outline:none; border-color:var(--primary);}
+.pw-toggle{
+  position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none;
+  color:var(--text-faint); font-size:12.5px; font-weight:600; padding:4px;
+}
+.btn{
+  border:none; border-radius:var(--radius-sm); padding:10px 16px; font-weight:600; font-size:14px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px; transition:filter .12s, transform .05s;
+  white-space:nowrap;
+}
+.btn:active{transform:scale(.98);}
+.btn-primary{background:var(--primary); color:#fff;}
+.btn-primary:hover{filter:brightness(1.08);}
+.btn-accent{background:var(--accent); color:#fff;}
+.btn-accent:hover{filter:brightness(1.08);}
+.btn-outline{background:transparent; border:1.5px solid var(--border); color:var(--text);}
+.btn-outline:hover{background:var(--surface-2);}
+.btn-danger{background:var(--danger); color:#fff;}
+.btn-danger:hover{filter:brightness(1.1);}
+.btn-ghost{background:transparent; color:var(--text-dim);}
+.btn-ghost:hover{background:var(--surface-2); color:var(--text);}
+.btn-sm{padding:6px 11px; font-size:12.5px;}
+.btn-block{width:100%;}
+.btn:disabled{opacity:.55; pointer-events:none;}
+.login-error{
+  background:var(--danger-light); color:var(--danger); font-size:13px; padding:10px 12px;
+  border-radius:var(--radius-sm); margin-bottom:16px; display:none; align-items:center; gap:8px;
+}
+.login-links{display:flex; justify-content:center; margin-top:16px;}
+.link-btn{background:none; border:none; color:var(--primary); font-size:13px; font-weight:600;}
+.link-btn:hover{text-decoration:underline;}
+
+/* ---------- App shell ---------- */
+#app{position:fixed; inset:0; display:none;}
+.shell{display:flex; height:100%;}
+.sidebar{
+  width:236px; background:var(--sidebar); color:var(--sidebar-text); display:flex; flex-direction:column;
+  flex-shrink:0; transition:transform .2s ease; z-index:200;
+}
+.sidebar-head{display:flex; align-items:center; gap:10px; padding:18px 18px 14px;}
+.sidebar-head .mark{
+  width:34px; height:34px; border-radius:9px; background:var(--primary); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800;
+}
+.sidebar-head .name{color:#fff; font-weight:800; font-size:16.5px; letter-spacing:-.3px;}
+.sidebar-head .name span{color:var(--accent);}
+.store-pill{
+  margin:0 14px 10px; padding:8px 10px; background:var(--sidebar-hover); border-radius:8px;
+  font-size:12px; color:#c3cbd6; display:flex; align-items:center; gap:6px;
+}
+.nav-scroll{flex:1; overflow-y:auto; padding:4px 10px 14px;}
+.nav-group-label{font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:#5c6779; padding:14px 10px 6px;}
+.nav-item{
+  display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:8px; font-size:13.6px;
+  font-weight:500; color:var(--sidebar-text); cursor:pointer; margin-bottom:2px; transition:background .12s,color .12s;
+  border:none; background:none; width:100%; text-align:left;
+}
+.nav-item .ic{width:18px; text-align:center; font-size:15px;}
+.nav-item:hover{background:var(--sidebar-hover); color:#fff;}
+.nav-item.active{background:var(--primary); color:#fff;}
+.sidebar-foot{padding:12px; border-top:1px solid rgba(255,255,255,.06);}
+.user-chip{display:flex; align-items:center; gap:9px; padding:8px; border-radius:8px; cursor:pointer;}
+.user-chip:hover{background:var(--sidebar-hover);}
+.avatar{
+  width:32px; height:32px; border-radius:50%; background:var(--accent); color:#fff; font-weight:700;
+  display:flex; align-items:center; justify-content:center; font-size:13px; flex-shrink:0; object-fit:cover;
+}
+.user-chip .u-name{color:#fff; font-size:13px; font-weight:600; line-height:1.2;}
+.user-chip .u-role{color:#8792a1; font-size:11px;}
+
+.main{flex:1; display:flex; flex-direction:column; min-width:0; height:100%;}
+.topbar{
+  height:60px; flex-shrink:0; background:var(--surface); border-bottom:1px solid var(--border);
+  display:flex; align-items:center; padding:0 20px; gap:14px;
+}
+.menu-toggle{display:none; background:none; border:none; font-size:20px; color:var(--text);}
+.page-title{font-size:17px; font-weight:700;}
+.topbar-search{
+  flex:1; max-width:380px; display:flex; align-items:center; gap:8px; background:var(--surface-2);
+  border:1px solid var(--border); border-radius:8px; padding:7px 12px; margin-left:8px;
+}
+.topbar-search input{background:none; border:none; outline:none; flex:1; color:var(--text); font-size:13.5px;}
+.topbar-actions{display:flex; align-items:center; gap:8px; margin-left:auto;}
+.icon-btn{
+  width:36px; height:36px; border-radius:8px; border:1px solid var(--border); background:var(--surface);
+  display:flex; align-items:center; justify-content:center; font-size:16px; color:var(--text-dim); position:relative;
+}
+.icon-btn:hover{background:var(--surface-2); color:var(--text);}
+.badge-dot{
+  position:absolute; top:-3px; right:-3px; background:var(--danger); color:#fff; font-size:9.5px; font-weight:700;
+  min-width:16px; height:16px; border-radius:9px; display:flex; align-items:center; justify-content:center; padding:0 3px;
+}
+.sync-pill{font-size:11.5px; padding:4px 9px; border-radius:20px; font-weight:600; display:flex; align-items:center; gap:5px;}
+.sync-ok{background:var(--success-light); color:var(--success);}
+.sync-busy{background:var(--warning-light); color:var(--warning);}
+.sync-off{background:var(--danger-light); color:var(--danger);}
+
+.content{flex:1; overflow-y:auto; padding:22px;}
+.content-inner{max-width:1400px; margin:0 auto;}
+
+/* ---------- Common UI ---------- */
+.section-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; flex-wrap:wrap; gap:10px;}
+.section-head h2{font-size:19px; font-weight:800;}
+.section-head .sub{color:var(--text-dim); font-size:13px; margin-top:2px;}
+.stat-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin-bottom:20px;}
+.stat-card{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px;
+  box-shadow:var(--shadow);
+}
+.stat-card .label{font-size:12px; color:var(--text-dim); font-weight:600; display:flex; align-items:center; gap:6px;}
+.stat-card .value{font-size:23px; font-weight:800; margin-top:8px; letter-spacing:-.3px;}
+.stat-card .delta{font-size:11.5px; margin-top:6px; font-weight:600;}
+.delta.up{color:var(--success);} .delta.down{color:var(--danger);}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);}
+.card-head{padding:15px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
+.card-head h3{font-size:14.5px; font-weight:700;}
+.card-body{padding:16px 18px;}
+.grid-2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+.grid-3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px;}
+@media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr;}}
+
+table{width:100%; border-collapse:collapse; font-size:13.4px;}
+thead th{
+  text-align:left; padding:9px 12px; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--text-faint); border-bottom:1.5px solid var(--border); font-weight:700; white-space:nowrap;
+}
+tbody td{padding:11px 12px; border-bottom:1px solid var(--border); vertical-align:middle;}
+tbody tr:hover{background:var(--surface-2);}
+.table-wrap{overflow-x:auto;}
+.badge{display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:700; padding:3px 9px; border-radius:20px;}
+.badge-success{background:var(--success-light); color:var(--success);}
+.badge-danger{background:var(--danger-light); color:var(--danger);}
+.badge-warning{background:var(--warning-light); color:var(--warning);}
+.badge-info{background:var(--info-light); color:var(--info);}
+.badge-neutral{background:var(--surface-2); color:var(--text-dim);}
+.empty-state{padding:50px 20px; text-align:center; color:var(--text-faint);}
+.empty-state .ic{font-size:34px; margin-bottom:10px;}
+.empty-state .t{font-weight:700; color:var(--text-dim); margin-bottom:4px;}
+.toolbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px;}
+.input, select.input, textarea.input{
+  padding:9px 12px; border:1.5px solid var(--border); border-radius:var(--radius-sm); background:var(--surface);
+  color:var(--text); font-size:13.6px; width:100%;
+}
+.input:focus, select.input:focus, textarea.input:focus{outline:none; border-color:var(--primary);}
+.form-row{margin-bottom:14px;}
+.form-row label{display:block; font-size:12.5px; font-weight:600; color:var(--text-dim); margin-bottom:6px;}
+.form-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+@media(max-width:600px){.form-grid{grid-template-columns:1fr;}}
+.pager{display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-top:1px solid var(--border); font-size:12.5px; color:var(--text-dim);}
+
+/* ---------- Modals ---------- */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(10,14,20,.5); display:none; align-items:center; justify-content:center;
+  z-index:1000; padding:16px; backdrop-filter:blur(1px);
+}
+.modal-overlay.show{display:flex; animation:fadeBg .15s ease;}
+@keyframes fadeBg{from{opacity:0;} to{opacity:1;}}
+.modal{
+  background:var(--surface); border-radius:14px; width:100%; max-width:560px; max-height:90vh; overflow:hidden;
+  display:flex; flex-direction:column; box-shadow:var(--shadow-lg); animation:modalIn .18s ease;
+}
+@keyframes modalIn{from{opacity:0; transform:translateY(10px) scale(.98);} to{opacity:1; transform:translateY(0) scale(1);}}
+.modal.wide{max-width:920px;}
+.modal-head{padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;}
+.modal-head h3{font-size:15.5px; font-weight:700;}
+.modal-close{background:none; border:none; font-size:19px; color:var(--text-faint); width:30px; height:30px; border-radius:7px;}
+.modal-close:hover{background:var(--surface-2);}
+.modal-body{padding:20px; overflow-y:auto;}
+.modal-foot{padding:14px 20px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:10px;}
+
+/* ---------- Toasts ---------- */
+#toast-wrap{position:fixed; top:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:10px; max-width:340px;}
+.toast{
+  background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--primary); border-radius:9px;
+  padding:12px 14px; box-shadow:var(--shadow-lg); display:flex; gap:10px; align-items:flex-start; animation:toastIn .2s ease;
+  font-size:13.3px;
+}
+@keyframes toastIn{from{opacity:0; transform:translateX(30px);} to{opacity:1; transform:translateX(0);}}
+.toast.success{border-left-color:var(--success);}
+.toast.error{border-left-color:var(--danger);}
+.toast.warning{border-left-color:var(--warning);}
+.toast .t-ic{font-size:16px; margin-top:1px;}
+.toast .t-msg{flex:1; color:var(--text); font-weight:500;}
+.toast .t-close{background:none; border:none; color:var(--text-faint); font-size:14px;}
+
+/* ---------- POS ---------- */
+.pos-layout{display:grid; grid-template-columns:1fr 380px; gap:16px; height:calc(100vh - 122px);}
+@media(max-width:1000px){.pos-layout{grid-template-columns:1fr; height:auto;}}
+.pos-left{display:flex; flex-direction:column; min-height:0;}
+.pos-search-bar{display:flex; gap:8px; margin-bottom:12px;}
+.pos-cats{display:flex; gap:8px; overflow-x:auto; padding-bottom:10px; flex-shrink:0;}
+.cat-chip{
+  padding:7px 14px; border-radius:20px; background:var(--surface); border:1.5px solid var(--border);
+  font-size:12.6px; font-weight:600; white-space:nowrap; color:var(--text-dim);
+}
+.cat-chip.active{background:var(--primary); border-color:var(--primary); color:#fff;}
+.pos-products{
+  flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px;
+  align-content:start;
+}
+.prod-card{
+  background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px; cursor:pointer;
+  transition:transform .08s, border-color .12s; text-align:left; display:flex; flex-direction:column;
+}
+.prod-card:hover{border-color:var(--primary); transform:translateY(-2px);}
+.prod-card:active{transform:scale(.97);}
+.prod-thumb{
+  width:100%; aspect-ratio:1; border-radius:7px; background:var(--surface-2); display:flex; align-items:center;
+  justify-content:center; font-size:26px; margin-bottom:8px; overflow:hidden; color:var(--text-faint);
+}
+.prod-thumb img{width:100%; height:100%; object-fit:cover;}
+.prod-card .p-name{font-size:12.6px; font-weight:700; line-height:1.25; margin-bottom:3px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;}
+.prod-card .p-price{font-size:12.5px; color:var(--primary); font-weight:800;}
+.prod-card .p-stock{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
+.prod-card.disabled{opacity:.4; pointer-events:none;}
+
+.pos-right{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0;}
+.cart-head{padding:14px 16px; border-bottom:1px solid var(--border); font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center;}
+.cart-items{flex:1; overflow-y:auto; padding:8px 12px;}
+.cart-item{padding:9px 4px; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center;}
+.cart-item .ci-name{font-size:12.8px; font-weight:600; flex:1; min-width:0;}
+.cart-item .ci-sub{font-size:11px; color:var(--text-faint);}
+.qty-ctrl{display:flex; align-items:center; gap:6px;}
+.qty-ctrl button{width:22px; height:22px; border-radius:5px; border:1px solid var(--border); background:var(--surface-2); font-weight:700; font-size:13px; line-height:1;}
+.qty-ctrl span{min-width:20px; text-align:center; font-size:12.5px; font-weight:700;}
+.ci-remove{background:none; border:none; color:var(--danger); font-size:15px; padding:2px 4px;}
+.cart-summary{border-top:1px solid var(--border); padding:12px 16px;}
+.sum-row{display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px; color:var(--text-dim);}
+.sum-row.total{font-size:17px; font-weight:800; color:var(--text); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
+.cart-foot{padding:12px 16px; display:flex; gap:8px;}
+
+/* Payment modal */
+.pay-methods{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px;}
+.pay-method{padding:10px; border:1.5px solid var(--border); border-radius:8px; display:flex; flex-direction:column; gap:6px;}
+.pay-method .pm-label{font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:6px;}
+.pay-list{margin-top:10px;}
+.pay-line{display:flex; justify-content:space-between; padding:6px 0; font-size:13px; border-bottom:1px dashed var(--border);}
+
+/* Receipt */
+.receipt{
+  font-family:'JetBrains Mono',monospace; font-size:12px; width:320px; margin:0 auto; background:#fff; color:#111; padding:14px;
+}
+.receipt hr{border:none; border-top:1px dashed #999; margin:8px 0;}
+.receipt .r-center{text-align:center;}
+.receipt .r-row{display:flex; justify-content:space-between; gap:8px;}
+.receipt .r-total{font-weight:700; font-size:14px;}
+
+/* login/hide helpers */
+.hidden{display:none !important;}
+.flex{display:flex;} .items-center{align-items:center;} .gap-8{gap:8px;} .gap-6{gap:6px;}
+.text-dim{color:var(--text-dim);} .text-faint{color:var(--text-faint);}
+.mt-8{margin-top:8px;} .mt-12{margin-top:12px;} .mb-8{margin-bottom:8px;}
+.w-full{width:100%;}
+.tag-search-result{padding:10px 12px; border-bottom:1px solid var(--border); cursor:pointer; display:flex; justify-content:space-between; gap:10px;}
+.tag-search-result:hover{background:var(--surface-2);}
+
+/* mobile */
+@media(max-width:880px){
+  .sidebar{position:fixed; top:0; bottom:0; left:0; transform:translateX(-100%); box-shadow:var(--shadow-lg);}
+  .sidebar.open{transform:translateX(0);}
+  .menu-toggle{display:flex; align-items:center; justify-content:center;}
+  .topbar-search{display:none;}
+  .content{padding:14px;}
+  .stat-grid{grid-template-columns:repeat(2,1fr);}
+}
+@media print{
+  body *{visibility:hidden;}
+  #print-area, #print-area *{visibility:visible;}
+  #print-area{position:fixed; top:0; left:0; width:100%;}
+}
+</style>
+</head>
+<body>
+
+<!-- ===================== BOOT SCREEN ===================== -->
+<div id="boot-screen">
+  <div class="boot-logo">BRAINY <span>STORE</span></div>
+  <div class="spinner"></div>
+  <div class="boot-sub">Chargement de l'application…</div>
+</div>
+
+<!-- ===================== LOGIN SCREEN ===================== -->
+<div id="login-screen">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-logo">
+      <div class="mark">B</div>
+      <div class="name">BRAINY <span>STORE</span></div>
+    </div>
+    <div class="login-sub">Connectez-vous pour accéder à votre boutique</div>
+
+    <div class="login-error" id="login-error"><span>⚠</span><span id="login-error-text"></span></div>
+
+    <div class="field">
+      <label for="login-email">Adresse email</label>
+      <input type="email" id="login-email" placeholder="vous@boutique.com" required autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="login-password">Mot de passe</label>
+      <div class="field-input-wrap">
+        <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
+        <button type="button" class="pw-toggle" id="pw-toggle">Afficher</button>
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-block" id="login-submit">
+      <span id="login-submit-text">Se connecter</span>
+    </button>
+    <div class="login-links">
+      <button type="button" class="link-btn" id="forgot-pw-btn">Mot de passe oublié ?</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="app">
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div class="mark">B</div>
+        <div class="name">BRAINY <span>STORE</span></div>
+      </div>
+      <div class="store-pill" id="store-pill">🏪 <span id="store-pill-text">Chargement…</span></div>
+      <nav class="nav-scroll" id="nav-scroll"></nav>
+      <div class="sidebar-foot">
+        <div class="user-chip" id="user-chip">
+          <div class="avatar" id="user-avatar">?</div>
+          <div style="min-width:0;">
+            <div class="u-name" id="user-name-lbl">—</div>
+            <div class="u-role" id="user-role-lbl">—</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <button class="menu-toggle" id="menu-toggle">☰</button>
+        <div class="page-title" id="page-title">Tableau de bord</div>
+        <div class="topbar-search">
+          <span>🔎</span>
+          <input type="text" id="global-search" placeholder="Rechercher produit, client, vente…">
+        </div>
+        <div class="topbar-actions">
+          <span class="sync-pill sync-ok" id="sync-pill">🟢 Synchronisé</span>
+          <button class="icon-btn" id="theme-toggle" title="Changer de thème">🌙</button>
+          <button class="icon-btn" id="notif-btn" title="Notifications">🔔<span class="badge-dot hidden" id="notif-count">0</span></button>
+          <button class="icon-btn" id="logout-btn" title="Déconnexion">⏻</button>
+        </div>
+      </div>
+      <div class="content"><div class="content-inner" id="view-root"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== TOASTS ===================== -->
+<div id="toast-wrap"></div>
+
+<!-- ===================== GENERIC MODAL ROOT ===================== -->
+<div class="modal-overlay" id="modal-root"></div>
+
+<!-- ===================== PRINT AREA ===================== -->
+<div id="print-area"></div>
+
+<script type="module">
+/* ==========================================================================
+   BRAINY STORE — CŒUR APPLICATIF (module ES unique)
+   Organisation du code (voir sections marquées ci-dessous) :
+   CONFIGURATION · FIREBASE · AUTH · ÉTAT GLOBAL · UTILITAIRES ·
+   FORMATAGE MONÉTAIRE · DATES · PERMISSIONS · R2 API · FIRESTORE ·
+   NUMÉROTATION · ROUTING · NOTIFICATIONS(TOAST) · MODALS · AUDIT ·
+   DASHBOARD · PRODUITS · STOCK · POS/VENTES · PAIEMENTS · CLIENTS ·
+   CAISSE · INITIALISATION
+   ========================================================================== */
+
+/* ============================= CONFIGURATION ============================= */
+import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import {
+    getFirestore, doc, getDoc, setDoc, addDoc, collection, getDocs, updateDoc,
+    deleteDoc, query, where, orderBy, limit, startAfter, writeBatch, runTransaction,
+    serverTimestamp, Timestamp
+} from "https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js";
+import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+    sendPasswordResetEmail, updateProfile, signOut
+} from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyCxmovWNKm7xxlDeHChiq4ilS-nNdVowdQ",
+    authDomain: "suivre-coli.firebaseapp.com",
+    projectId: "suivre-coli"
+};
+
+// Cloudflare Worker faisant office d'intermédiaire vers le bucket R2.
+// AUCUN secret Cloudflare/R2 n'est présent ici : le Worker détient les
+// credentials côté serveur (voir la doc de déploiement en fin de fichier).
+const R2_WORKER_URL = "https://boutique.contactetsbrainy.workers.dev";
+const R2_PUBLIC_URL = "https://pub-8baf2ff510794454ba9c970cae59caab.r2.dev";
+
+/* ============================== FIREBASE ============================== */
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+/* ============================== ÉTAT GLOBAL ============================== */
+const STATE = {
+  user: null,            // objet Firebase Auth
+  profile: null,         // document users/{uid}
+  store: null,           // document stores/{storeId} courant
+  stores: [],            // toutes les boutiques (si super_admin)
+  currentSection: 'dashboard',
+  cart: [],              // panier POS en cours
+  products: [],          // cache produits de la boutique active
+  categories: [],
+  customers: [],
+  online: navigator.onLine,
+  theme: localStorage.getItem('bs_theme') || 'light',
+  notifications: [],
+  unsubList: []
+};
+
+/* ============================== UTILITAIRES ============================== */
+function $(sel, root=document){ return root.querySelector(sel); }
+function $all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
+function el(tag, attrs={}, ...children){
+  const node = document.createElement(tag);
+  for(const [k,v] of Object.entries(attrs||{})){
+    if(k === 'class') node.className = v;
+    else if(k === 'html') node.innerHTML = v;
+    else if(k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  children.flat().forEach(c => { if(c!=null) node.append(c.nodeType ? c : document.createTextNode(c)); });
+  return node;
+}
+function escapeHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+function slugFile(name){
+  return name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9.\-_]/g,'_').toLowerCase();
+}
+function debounce(fn, ms=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+/* ========================== FORMATAGE MONÉTAIRE ==========================
+   Toutes les sommes sont manipulées en FCFA sous forme d'ENTIERS
+   (aucune décimale). On arrondit systématiquement au franc le plus proche
+   pour éviter toute dérive liée aux flottants JavaScript. */
+function money(n){
+  n = Math.round(Number(n)||0);
+  return n.toLocaleString('fr-FR').replace(/\u202f/g,' ') + ' FCFA';
+}
+function moneyPlain(n){ return Math.round(Number(n)||0); }
+function toInt(v){ const n = parseInt(v,10); return isNaN(n) ? 0 : n; }
+function pct(part, total){ return total > 0 ? Math.round((part/total)*1000)/10 : 0; }
+
+/* ================================ DATES ================================ */
+function toDate(v){
+  if(!v) return null;
+  if(v.toDate) return v.toDate();
+  if(v instanceof Date) return v;
+  return new Date(v);
+}
+function fmtDate(v, withTime=false){
+  const d = toDate(v); if(!d) return '—';
+  const s = d.toLocaleDateString('fr-FR', {day:'2-digit',month:'2-digit',year:'numeric'});
+  if(!withTime) return s;
+  return s + ' ' + d.toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit'});
+}
+function startOfDay(d=new Date()){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
+function startOfWeek(d=new Date()){ const x=startOfDay(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); return x; }
+function startOfMonth(d=new Date()){ const x=startOfDay(d); x.setDate(1); return x; }
+function startOfYear(d=new Date()){ const x=startOfDay(d); x.setMonth(0,1); return x; }
+function daysAgo(n){ const x=startOfDay(); x.setDate(x.getDate()-n); return x; }
+
+/* ============================== PERMISSIONS ==============================
+   Le contrôle frontend masque l'UI mais N'EST PAS la sécurité réelle :
+   les Firestore Security Rules (voir doc finale) sont la barrière effective. */
+const ROLE_LABELS = {
+  super_admin:'Super Administrateur', admin:'Administrateur (hérité)', gerant:'Gérant',
+  vendeur:'Vendeur (hérité)', caissier:'Caissier', magasinier:'Magasinier (hérité)', comptable:'Comptable (hérité)'
+};
+// Rôles officiels du système à 3 niveaux (utilisés pour toute création/modification
+// d'utilisateur à partir de maintenant). Les anciens rôles ci-dessus restent lisibles
+// et fonctionnels pour les comptes déjà existants (rétrocompatibilité, voir roleTier()).
+const OFFICIAL_ROLES = ['super_admin','gerant','caissier'];
+const TIER_LABELS = { super_admin:'Super Administrateur', gerant:'Gérant', caissier:'Caissier' };
+const TIER_BADGE = { super_admin:'badge-danger', gerant:'badge-info', caissier:'badge-neutral' };
+
+/* ============================== SYSTÈME DE PERMISSIONS À 3 NIVEAUX ==============================
+   Toute permission réelle est calculée à partir du "tier" (palier) du rôle, jamais du
+   libellé brut, afin de supporter d'anciens comptes (admin/vendeur/magasinier/comptable)
+   sans jamais devoir modifier leurs données existantes : roleTier() fait la correspondance. */
+const LEGACY_ROLE_TIER = {
+  super_admin:'super_admin',
+  admin:'gerant',       // ancien "Administrateur" -> aligné sur Gérant (accès métier complet, pas de gestion des comptes)
+  gerant:'gerant',
+  comptable:'gerant',   // profil finance -> aligné sur Gérant (accès finance/dépenses/rapports)
+  magasinier:'gerant',  // profil stock -> aligné sur Gérant (le Caissier n'a pas accès au stock)
+  caissier:'caissier',
+  vendeur:'caissier'    // profil vente -> aligné sur Caissier
+};
+function roleTier(role){ return LEGACY_ROLE_TIER[role] || 'caissier'; }
+function myTier(){ return roleTier(STATE.profile?.role); }
+
+const TIER_PERMISSIONS = {
+  super_admin: ['*'],
+  gerant: ['dashboard','pos','sales','products','stock','inventory','purchases','suppliers','customers',
+           'finance','cashregister','expenses','employees','sellers','missions','orders','promotions',
+           'loyalty','transfers','reports'],
+  caissier: ['dashboard','pos','sales','cashregister','customers','employees','sellers','missions']
+};
+function can(sectionKey){
+  if(!STATE.profile) return false;
+  const perms = TIER_PERMISSIONS[myTier()] || [];
+  return perms.includes('*') || perms.includes(sectionKey);
+}
+// Permissions fines sur des opérations sensibles — vérifiées dans la logique métier
+// elle-même (pas seulement pour cacher des boutons), donc appelées avant CHAQUE
+// écriture Firestore sensible, en plus du masquage d'UI.
+function isSuperAdmin(){ return myTier() === 'super_admin'; }
+function isGerantOrAbove(){ return myTier()==='super_admin' || myTier()==='gerant'; }
+function isCaissierTier(){ return myTier()==='caissier'; }
+function canManageUsers(){ return isSuperAdmin(); }                 // Seul le Super Admin gère comptes/rôles
+function canEditCostPrice(){ return isGerantOrAbove(); }
+function canVoidSale(){ return isGerantOrAbove(); }
+function canManageStock(){ return isGerantOrAbove(); }              // entrées/sorties/ajustements/transferts
+function canManageProducts(){ return isGerantOrAbove(); }           // création/modification produits
+function canManagePurchases(){ return isGerantOrAbove(); }
+function canManageFinance(){ return isGerantOrAbove(); }            // finance globale + dépenses
+function canManagePromotionsLoyalty(){ return isGerantOrAbove(); }
+function canManageTransfers(){ return isGerantOrAbove(); }
+function canManageOwnCashOps(){ return true; }                      // ventes/opérations de caisse liées à ses propres ventes (tous rôles connectés)
+function currentStoreId(){ return STATE.profile?.boutiqueId || null; }
+
+/* ================================ R2 API ================================
+   Toute interaction avec le stockage de fichiers passe EXCLUSIVEMENT par
+   ces trois fonctions, qui appellent le Worker Cloudflare (jamais de
+   credential R2 ici). Le Worker route PUT/GET/DELETE/HEAD vers env.MY_BUCKET. */
+async function uploadToR2(file, folderPath){
+  const cleanName = slugFile(file.name);
+  const key = `${folderPath}/${Date.now()}_${cleanName}`;
+  const res = await fetch(`${R2_WORKER_URL}/${key}`, {
+    method:'PUT',
+    headers:{ 'Content-Type': file.type || 'application/octet-stream' },
+    body:file
+  });
+  if(!res.ok) throw new Error(`Échec de l'envoi du fichier (${res.status})`);
+  return { path:key, url:`${R2_PUBLIC_URL}/${key}` };
+}
+async function getR2File(path){
+  const res = await fetch(`${R2_WORKER_URL}/${path}`);
+  if(!res.ok) throw new Error(`Fichier introuvable (${res.status})`);
+  return res;
+}
+async function deleteR2File(path){
+  if(!path) return;
+  const res = await fetch(`${R2_WORKER_URL}/${path}`, { method:'DELETE' });
+  if(!res.ok && res.status !== 404) throw new Error(`Échec de la suppression (${res.status})`);
+  return true;
+}
+
+/* ============================== FIRESTORE HELPERS ============================== */
+async function fsGetAll(colName, ...constraints){
+  const q = query(collection(db, colName), ...constraints);
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id:d.id, ...d.data() }));
+}
+async function fsGet(colName, id){
+  const s = await getDoc(doc(db, colName, id));
+  return s.exists() ? { id:s.id, ...s.data() } : null;
+}
+async function fsAdd(colName, data){
+  const ref = await addDoc(collection(db, colName), { ...data, dateCreation: serverTimestamp() });
+  return ref.id;
+}
+async function fsSet(colName, id, data){
+  await setDoc(doc(db, colName, id), data, { merge:true });
+}
+async function fsUpdate(colName, id, data){
+  await updateDoc(doc(db, colName, id), { ...data, dateModification: serverTimestamp() });
+}
+async function fsDelete(colName, id){
+  await deleteDoc(doc(db, colName, id));
+}
+/* ============================== CRÉATION D'UTILISATEUR (Super Admin) ==============================
+   createUserWithEmailAndPassword() connecte automatiquement l'app avec le compte créé.
+   Pour ne jamais déconnecter le Super Administrateur qui crée le compte, on utilise une
+   seconde instance Firebase temporaire, isolée, détruite juste après usage. */
+async function createUserAsAdmin({ email, password, nom, prenom, telephone, role, boutiqueId }){
+  if(!canManageUsers()) throw new Error("Seul le Super Administrateur peut créer des utilisateurs.");
+  const secondaryApp = initializeApp(firebaseConfig, 'secondary_'+Date.now());
+  const secondaryAuth = getAuth(secondaryApp);
+  try{
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+    const newUid = cred.user.uid;
+    const profileData = {
+      id:newUid, uid:newUid, email, nom:nom||'', prenom:prenom||'', telephone:telephone||'',
+      photo:'', photoPath:'', role, boutiqueId: boutiqueId||null, actif:true,
+      dateCreation: serverTimestamp(), creePar: STATE.user?.uid||null
+    };
+    await setDoc(doc(db, 'users', newUid), profileData);
+    return newUid;
+  } finally {
+    try{ await signOut(secondaryAuth); }catch(e){}
+    try{ await deleteApp(secondaryApp); }catch(e){}
+  }
+}
+function storeScoped(...extra){
+  const c = [];
+  if(!isSuperAdmin()) c.push(where('boutiqueId','==', currentStoreId()));
+  return [...c, ...extra];
+}
+
+/* ============================== NUMÉROTATION ==============================
+   Génère des numéros séquentiels du type VTE-2026-000001 de façon atomique
+   via une transaction Firestore sur un compteur dédié (évite les doublons
+   même en cas de ventes simultanées). */
+async function nextNumber(prefix){
+  const year = new Date().getFullYear();
+  const counterId = `${prefix}_${year}`;
+  const ref = doc(db, 'counters', counterId);
+  const n = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists() ? (snap.data().value||0) : 0;
+    const next = current + 1;
+    tx.set(ref, { value: next, prefix, year }, { merge:true });
+    return next;
+  });
+  return `${prefix}-${year}-${String(n).padStart(6,'0')}`;
+}
+
+/* ============================== SYSTÈME SONORE ==============================
+   Génère de courts sons professionnels via Web Audio API (aucun fichier audio
+   externe requis — fonctionne dans un fichier HTML autonome). Respecte les
+   règles des navigateurs sur l'autoplay : le contexte audio n'est réellement
+   démarré/débloqué qu'après la toute première interaction utilisateur. */
+let AUDIO_CTX = null;
+function getAudioCtx(){
+  if(!AUDIO_CTX){
+    try{ AUDIO_CTX = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch(e){ return null; }
+  }
+  if(AUDIO_CTX.state === 'suspended'){ AUDIO_CTX.resume().catch(()=>{}); }
+  return AUDIO_CTX;
+}
+['pointerdown','keydown','touchstart'].forEach(evt=>
+  document.addEventListener(evt, ()=>getAudioCtx(), { once:true, passive:true })
+);
+/** Joue une courte séquence de notes (fréquences en Hz) avec une enveloppe douce. */
+function playTone(freqs, { duration=0.12, type='sine', gain=0.16, gap=0 }={}){
+  const ctx = getAudioCtx(); if(!ctx) return;
+  try{
+    let t = ctx.currentTime;
+    freqs.forEach(f=>{
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f, t);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + duration + 0.02);
+      t += duration * 0.55 + gap;
+    });
+  }catch(e){ /* lecture audio non critique : on ignore silencieusement */ }
+}
+function playSuccessSound(){ playTone([880, 1318.5], { duration:.11, type:'sine', gain:.16 }); }
+function playErrorSound(){ playTone([233, 174.6], { duration:.16, type:'square', gain:.12 }); }
+function playWarningSound(){ playTone([659.3, 523.25], { duration:.13, type:'triangle', gain:.14 }); }
+function playNotificationSound(){ playTone([740], { duration:.09, type:'sine', gain:.12 }); }
+function playActionSound(){ playTone([600], { duration:.06, type:'sine', gain:.09 }); }
+
+/* ============================== NOTIFICATIONS (TOAST) ============================== */
+const TOAST_ICONS = { success:'✓', error:'✕', warning:'⚠', info:'ℹ' };
+function toast(message, type='info', duration=4200){
+  const wrap = $('#toast-wrap');
+  const node = el('div', { class:`toast ${type}` },
+    el('span',{class:'t-ic'}, TOAST_ICONS[type]||'ℹ'),
+    el('span',{class:'t-msg'}, message),
+    el('button',{class:'t-close', onclick:()=>node.remove()}, '✕')
+  );
+  wrap.appendChild(node);
+  setTimeout(()=> node.remove(), duration);
+  // Chaque notification joue le son correspondant à son type.
+  if(type==='success') playSuccessSound();
+  else if(type==='error') playErrorSound();
+  else if(type==='warning') playWarningSound();
+  else playNotificationSound();
+}
+function friendlyError(error){
+  const code = error?.code || '';
+  const map = {
+    'auth/invalid-email':"Adresse email invalide.",
+    'auth/user-not-found':"Aucun compte ne correspond à cet email.",
+    'auth/wrong-password':"Mot de passe incorrect.",
+    'auth/invalid-credential':"Email ou mot de passe incorrect.",
+    'auth/too-many-requests':"Trop de tentatives. Réessayez dans quelques minutes.",
+    'auth/network-request-failed':"Problème de connexion réseau.",
+    'permission-denied':"Vous n'avez pas la permission d'effectuer cette action."
+  };
+  return map[code] || error?.message?.replace('Firebase:','').replace(/\(auth\/.*\)/,'').trim() || "Une erreur inattendue est survenue.";
+}
+
+/* ============================== MODALS (génériques) ============================== */
+function openModal({ title, body, footButtons=[], wide=false, onClose=null }){
+  const root = $('#modal-root');
+  root.innerHTML = '';
+  const modal = el('div', { class:`modal ${wide?'wide':''}` },
+    el('div',{class:'modal-head'},
+      el('h3',{},title),
+      el('button',{class:'modal-close', onclick:()=>closeModal()},'✕')
+    ),
+    el('div',{class:'modal-body'}, body),
+    footButtons.length ? el('div',{class:'modal-foot'}, footButtons) : ''
+  );
+  root.appendChild(modal);
+  root.classList.add('show');
+  root._onClose = onClose;
+  root.onclick = (e)=>{ if(e.target===root) closeModal(); };
+}
+function closeModal(){
+  const root = $('#modal-root');
+  root.classList.remove('show');
+  if(root._onClose) try{ root._onClose(); }catch(e){}
+  setTimeout(()=>{ root.innerHTML=''; }, 150);
+}
+function confirmDialog(message, { title='Confirmation', danger=false }={}){
+  return new Promise(resolve=>{
+    openModal({
+      title,
+      body: el('p',{}, message),
+      footButtons:[
+        el('button',{class:'btn btn-outline', onclick:()=>{closeModal(); resolve(false);}}, 'Annuler'),
+        el('button',{class:`btn ${danger?'btn-danger':'btn-primary'}`, onclick:()=>{closeModal(); resolve(true);}}, 'Confirmer')
+      ]
+    });
+  });
+}
+
+/* ============================== JOURNAL D'AUDIT ============================== */
+async function logAudit(action, moduleName, referenceId, description){
+  try{
+    await fsAdd('auditLogs', {
+      userId: STATE.user?.uid || null,
+      userName: STATE.profile ? `${STATE.profile.prenom||''} ${STATE.profile.nom||''}`.trim() : 'Système',
+      action, module: moduleName, referenceId: referenceId||null, description: description||'',
+      boutiqueId: currentStoreId(),
+      date: serverTimestamp()
+    });
+  }catch(e){ console.warn('Audit log failed', e); }
+}
+
+/* ============================== AUTHENTIFICATION ============================== */
+$('#pw-toggle').addEventListener('click', ()=>{
+  const inp = $('#login-password');
+  const showing = inp.type === 'text';
+  inp.type = showing ? 'password' : 'text';
+  $('#pw-toggle').textContent = showing ? 'Afficher' : 'Masquer';
+});
+
+$('#login-form').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const email = $('#login-email').value.trim();
+  const password = $('#login-password').value;
+  const errBox = $('#login-error');
+  errBox.style.display='none';
+  const btn = $('#login-submit');
+  btn.disabled = true;
+  $('#login-submit-text').innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;"></span>';
+  try{
+    await signInWithEmailAndPassword(auth, email, password);
+    // onAuthStateChanged prend le relais
+  }catch(error){
+    errBox.style.display='flex';
+    $('#login-error-text').textContent = friendlyError(error);
+    btn.disabled = false;
+    $('#login-submit-text').textContent = 'Se connecter';
+  }
+});
+
+$('#forgot-pw-btn').addEventListener('click', async ()=>{
+  const email = $('#login-email').value.trim();
+  if(!email){ toast("Saisissez d'abord votre email dans le champ ci-dessus.", 'warning'); return; }
+  try{
+    await sendPasswordResetEmail(auth, email);
+    toast('Un email de réinitialisation a été envoyé.', 'success');
+  }catch(error){
+    toast(friendlyError(error), 'error');
+  }
+});
+
+$('#logout-btn').addEventListener('click', async ()=>{
+  const ok = await confirmDialog('Voulez-vous vraiment vous déconnecter ?', {title:'Déconnexion'});
+  if(!ok) return;
+  await logAudit('deconnexion','auth', STATE.user?.uid, 'Déconnexion utilisateur');
+  await signOut(auth);
+});
+
+onAuthStateChanged(auth, async (user)=>{
+  $('#boot-screen').style.display='none';
+  if(user){
+    STATE.user = user;
+    try{
+      let profile = await fsGet('users', user.uid);
+      if(!profile){
+        // Premier profil créé automatiquement (ex: super_admin d'amorçage)
+        profile = {
+          id:user.uid, uid:user.uid, email:user.email, nom:'', prenom:user.displayName||'Utilisateur',
+          telephone:'', photo:'', photoPath:'', role:'super_admin', boutiqueId:null, actif:true,
+          permissions:[], dateCreation: new Date(), dernierConnexion: new Date()
+        };
+        await fsSet('users', user.uid, profile);
+        toast('Profil Super Administrateur initial créé. Configurez votre boutique dans Paramètres, puis créez vos utilisateurs dans le module Utilisateurs.', 'info');
+      }
+      if(profile.actif === false){
+        toast("Votre compte est désactivé. Contactez un administrateur.", 'error');
+        await signOut(auth);
+        return;
+      }
+      STATE.profile = profile;
+      await fsUpdate('users', user.uid, { dernierConnexion: serverTimestamp() });
+
+      if(isSuperAdmin()){
+        STATE.stores = await fsGetAll('stores');
+        STATE.store = STATE.stores[0] || null;
+      } else if(profile.boutiqueId){
+        STATE.store = await fsGet('stores', profile.boutiqueId);
+        STATE.stores = STATE.store ? [STATE.store] : [];
+      }
+
+      await logAudit('connexion','auth', user.uid, 'Connexion utilisateur');
+      showApp();
+      await preloadReferenceData();
+      navigateTo('dashboard');
+    }catch(error){
+      console.error(error);
+      toast(friendlyError(error), 'error');
+    }
+  }else{
+    STATE.user = null; STATE.profile = null;
+    $('#login-screen').style.display='flex';
+    $('#app').style.display='none';
+  }
+});
+
+function showApp(){
+  $('#login-screen').style.display='none';
+  $('#app').style.display='block';
+  renderSidebar();
+  const p = STATE.profile;
+  $('#user-name-lbl').textContent = `${p.prenom||''} ${p.nom||''}`.trim() || p.email;
+  $('#user-role-lbl').textContent = ROLE_LABELS[p.role] || p.role;
+  $('#user-avatar').textContent = (p.prenom?.[0]||p.email?.[0]||'?').toUpperCase();
+  if(p.photo) $('#user-avatar').innerHTML = `<img src="${p.photo}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+  $('#store-pill-text').textContent = isSuperAdmin() ? 'Toutes les boutiques' : (STATE.store?.nom || 'Aucune boutique assignée');
+  applyTheme();
+}
+
+/* ============================== PRÉCHARGEMENT ============================== */
+async function preloadReferenceData(){
+  try{
+    STATE.products = await fsGetAll('products', ...storeScoped(where('actif','==', true)));
+  }catch(e){ STATE.products = await fsGetAll('products'); }
+  try{
+    STATE.categories = await fsGetAll('categories');
+  }catch(e){ STATE.categories = []; }
+  try{
+    STATE.customers = await fsGetAll('customers', ...storeScoped());
+  }catch(e){ STATE.customers = []; }
+}
+
+/* ============================== ROUTING / NAVIGATION ============================== */
+const NAV_GROUPS = [
+  { label:'Général', items:[
+    {key:'dashboard', label:'Tableau de bord', icon:'🏠'},
+    {key:'pos', label:'Ventes / Caisse POS', icon:'🛒'},
+    {key:'sales', label:'Historique ventes', icon:'🧾'},
+  ]},
+  { label:'Catalogue & Stock', items:[
+    {key:'products', label:'Produits', icon:'📦'},
+    {key:'stock', label:'Stock', icon:'📊'},
+    {key:'inventory', label:'Inventaire', icon:'📋'},
+    {key:'transfers', label:'Transferts', icon:'🔄'},
+  ]},
+  { label:'Achats', items:[
+    {key:'purchases', label:'Achats', icon:'🚚'},
+    {key:'suppliers', label:'Fournisseurs', icon:'🏭'},
+  ]},
+  { label:'Relations', items:[
+    {key:'customers', label:'Clients', icon:'👥'},
+    {key:'orders', label:'Commandes', icon:'🛍️'},
+    {key:'promotions', label:'Promotions', icon:'🎁'},
+    {key:'loyalty', label:'Fidélité', icon:'👑'},
+  ]},
+  { label:'Finance', items:[
+    {key:'cashregister', label:'Caisse', icon:'💵'},
+    {key:'finance', label:'Finance', icon:'💰'},
+    {key:'expenses', label:'Dépenses', icon:'💸'},
+  ]},
+  { label:'Équipe', items:[
+    {key:'employees', label:'Employés', icon:'👨‍💼'},
+    {key:'sellers', label:'Vendeurs', icon:'🧑‍💼'},
+    {key:'missions', label:'Missions marché', icon:'🏪'},
+  ]},
+  { label:'Pilotage', items:[
+    {key:'reports', label:'Rapports', icon:'📈'},
+    {key:'audit', label:'Journal d\'activité', icon:'🔐'},
+    {key:'users', label:'Utilisateurs', icon:'🧑‍🤝‍🧑'},
+    {key:'settings', label:'Paramètres', icon:'⚙️'},
+  ]}
+];
+
+function renderSidebar(){
+  const nav = $('#nav-scroll');
+  nav.innerHTML = '';
+  NAV_GROUPS.forEach(group=>{
+    const visibleItems = group.items.filter(it => can(it.key));
+    if(!visibleItems.length) return;
+    nav.appendChild(el('div',{class:'nav-group-label'}, group.label));
+    visibleItems.forEach(it=>{
+      nav.appendChild(el('button',{
+        class:`nav-item ${STATE.currentSection===it.key?'active':''}`,
+        'data-key': it.key,
+        onclick: ()=> navigateTo(it.key)
+      }, el('span',{class:'ic'}, it.icon), it.label));
+    });
+  });
+}
+
+const SECTION_TITLES = Object.fromEntries(NAV_GROUPS.flatMap(g=>g.items).map(i=>[i.key,i.label]));
+
+async function navigateTo(key){
+  if(!can(key)){ toast("Vous n'avez pas accès à cette section.", 'warning'); key='dashboard'; }
+  STATE.currentSection = key;
+  $('#page-title').textContent = SECTION_TITLES[key] || 'BRAINY STORE';
+  $all('.nav-item').forEach(b=> b.classList.toggle('active', b.dataset.key===key));
+  $('#sidebar').classList.remove('open');
+  const root = $('#view-root');
+  root.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:0 auto 14px;"></div>Chargement…</div>';
+  try{
+    const renderer = SECTION_RENDERERS[key];
+    if(renderer){ await renderer(root); }
+    else { root.innerHTML = renderComingModule(key); }
+  }catch(error){
+    console.error(error);
+    root.innerHTML = `<div class="empty-state"><div class="ic">⚠</div><div class="t">Erreur de chargement</div><div>${escapeHtml(friendlyError(error))}</div></div>`;
+  }
+}
+function renderComingModule(key){
+  return `<div class="empty-state"><div class="ic">🚧</div><div class="t">${escapeHtml(SECTION_TITLES[key]||key)}</div>
+  <div>Ce module fait partie d'une prochaine phase de développement de BRAINY STORE.</div></div>`;
+}
+
+$('#menu-toggle').addEventListener('click', ()=> $('#sidebar').classList.toggle('open'));
+
+/* ============================== THEME ============================== */
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme', STATE.theme);
+  $('#theme-toggle').textContent = STATE.theme==='dark' ? '☀️' : '🌙';
+}
+$('#theme-toggle').addEventListener('click', ()=>{
+  STATE.theme = STATE.theme==='dark' ? 'light' : 'dark';
+  localStorage.setItem('bs_theme', STATE.theme);
+  applyTheme();
+});
+
+/* ============================== ÉTAT RÉSEAU ============================== */
+function updateSyncPill(){
+  const pill = $('#sync-pill');
+  if(!navigator.onLine){ pill.className='sync-pill sync-off'; pill.textContent='🔴 Hors connexion'; STATE.online=false; }
+  else { pill.className='sync-pill sync-ok'; pill.textContent='🟢 Synchronisé'; STATE.online=true; }
+}
+window.addEventListener('online', updateSyncPill);
+window.addEventListener('offline', updateSyncPill);
+updateSyncPill();
+
+/* ==========================================================================
+   DASHBOARD
+   ========================================================================== */
+async function renderDashboard(root){
+  const todayStart = startOfDay(), weekStart = startOfWeek(), monthStart = startOfMonth(), yearStart = startOfYear();
+  const sales = await fsGetAll('sales', ...storeScoped(orderBy('date','desc'), limit(500)));
+  const expenses = await fsGetAll('expenses', ...storeScoped(orderBy('date','desc'), limit(300)));
+  const validSales = sales.filter(s=> s.statut !== 'annulee');
+
+  const sumInRange = (list, dateField, start) => list
+    .filter(s => toDate(s[dateField]) && toDate(s[dateField]) >= start)
+    .reduce((a,s)=> a + moneyPlain(s.total||0), 0);
+
+  const caJour = sumInRange(validSales,'date', todayStart);
+  const caSemaine = sumInRange(validSales,'date', weekStart);
+  const caMois = sumInRange(validSales,'date', monthStart);
+  const caAnnee = sumInRange(validSales,'date', yearStart);
+
+  const nbVentes = validSales.length;
+  const nbPayees = validSales.filter(s=> s.statutPaiement==='payee').length;
+  const nbCredit = validSales.filter(s=> s.statutPaiement==='credit' || s.statutPaiement==='partiel').length;
+  const nbAnnulees = sales.filter(s=> s.statut==='annulee').length;
+
+  const coutMarchandisesMois = validSales
+    .filter(s=> toDate(s.date) >= monthStart)
+    .reduce((a,s)=> a + (s.items||[]).reduce((b,i)=> b + moneyPlain(i.prixAchat||0)*toInt(i.quantite||0), 0), 0);
+  const margeBruteMois = caMois - coutMarchandisesMois;
+  const depensesMois = expenses.filter(e=> toDate(e.date) >= monthStart).reduce((a,e)=> a + moneyPlain(e.montant||0),0);
+  const resultatMois = margeBruteMois - depensesMois;
+  const tauxMarge = pct(margeBruteMois, caMois);
+
+  const produits = STATE.products;
+  const valeurStock = produits.reduce((a,p)=> a + moneyPlain(p.prixAchat||0)*toInt(p.stock||0), 0);
+  const stockFaible = produits.filter(p=> toInt(p.stock) > 0 && toInt(p.stock) <= toInt(p.stockMinimum||0));
+  const stockEpuise = produits.filter(p=> toInt(p.stock) <= 0);
+
+  const clients = STATE.customers;
+  const detteClients = clients.reduce((a,c)=> a + moneyPlain(c.soldeDette||0), 0);
+
+  const last7 = Array.from({length:7}).map((_,i)=>{
+    const d = daysAgo(6-i); const next = new Date(d); next.setDate(next.getDate()+1);
+    const total = validSales.filter(s=> toDate(s.date) >= d && toDate(s.date) < next).reduce((a,s)=>a+moneyPlain(s.total||0),0);
+    return { label: d.toLocaleDateString('fr-FR',{weekday:'short'}), total };
+  });
+
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Tableau de bord'), el('div',{class:'sub'}, `Bienvenue, ${escapeHtml(STATE.profile.prenom||STATE.profile.email)} — ${fmtDate(new Date(), true)}`))
+  ));
+
+  const stat = (label, value, icon, delta) => el('div',{class:'stat-card'},
+    el('div',{class:'label'}, el('span',{},icon), label),
+    el('div',{class:'value'}, value),
+    delta ? el('div',{class:`delta ${delta.up?'up':'down'}`}, delta.text) : ''
+  );
+
+  const grid1 = el('div',{class:'stat-grid'},
+    stat('CA aujourd\'hui', money(caJour), '📅'),
+    stat('CA cette semaine', money(caSemaine), '🗓️'),
+    stat('CA ce mois', money(caMois), '📆'),
+    stat('CA cette année', money(caAnnee), '📊'),
+  );
+  const grid2 = el('div',{class:'stat-grid'},
+    stat('Bénéfice estimé (mois)', money(resultatMois), '💹'),
+    stat('Marge brute (mois)', `${money(margeBruteMois)} · ${tauxMarge}%`, '📈'),
+    stat('Ventes (total)', `${nbVentes}`, '🧾', {up:true, text:`${nbPayees} payées · ${nbCredit} à crédit · ${nbAnnulees} annulées`}),
+    stat('Valeur du stock', money(valeurStock), '📦'),
+  );
+  const grid3 = el('div',{class:'stat-grid'},
+    stat('Produits en stock faible', stockFaible.length, '⚠️'),
+    stat('Produits en rupture', stockEpuise.length, '🔴'),
+    stat('Clients enregistrés', clients.length, '👥'),
+    stat('Dettes clients', money(detteClients), '💳'),
+  );
+  root.append(grid1, grid2, grid3);
+
+  const chartsRow = el('div',{class:'grid-2'});
+  const c1 = el('div',{class:'card'}, el('div',{class:'card-head'}, el('h3',{},"Chiffre d'affaires — 7 derniers jours")), el('div',{class:'card-body'}, el('canvas',{id:'chart-ca7', height:'220'})));
+  const topProducts = computeTopProducts(validSales.filter(s=> toDate(s.date)>=monthStart), 6);
+  const c2 = el('div',{class:'card'}, el('div',{class:'card-head'}, el('h3',{},'Top produits du mois')), el('div',{class:'card-body'}, el('canvas',{id:'chart-top', height:'220'})));
+  chartsRow.append(c1,c2);
+  root.appendChild(chartsRow);
+
+  setTimeout(()=>{
+    new Chart($('#chart-ca7'), {
+      type:'bar',
+      data:{ labels: last7.map(d=>d.label), datasets:[{ label:'CA (FCFA)', data: last7.map(d=>d.total), backgroundColor:'#0f6e66', borderRadius:6 }] },
+      options:{ plugins:{legend:{display:false}}, scales:{ y:{ ticks:{ callback:v=>Number(v).toLocaleString('fr-FR') } } } }
+    });
+    new Chart($('#chart-top'), {
+      type:'bar',
+      data:{ labels: topProducts.map(p=>p.nom), datasets:[{ label:'Quantité vendue', data: topProducts.map(p=>p.qty), backgroundColor:'#c8792a', borderRadius:6 }] },
+      options:{ indexAxis:'y', plugins:{legend:{display:false}} }
+    });
+  }, 30);
+
+  if(stockFaible.length || stockEpuise.length){
+    const alertCard = el('div',{class:'card', style:'margin-top:16px;'},
+      el('div',{class:'card-head'}, el('h3',{},'Alertes de stock')),
+      el('div',{class:'card-body table-wrap'})
+    );
+    const tbody = renderStockAlertTable([...stockEpuise, ...stockFaible]);
+    alertCard.querySelector('.card-body').appendChild(tbody);
+    root.appendChild(alertCard);
+  }
+}
+function computeTopProducts(sales, n){
+  const map = new Map();
+  sales.forEach(s=> (s.items||[]).forEach(i=>{
+    const cur = map.get(i.productId) || { nom:i.nom, qty:0 };
+    cur.qty += toInt(i.quantite||0);
+    map.set(i.productId, cur);
+  }));
+  return Array.from(map.values()).sort((a,b)=>b.qty-a.qty).slice(0,n);
+}
+function renderStockAlertTable(products){
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Produit'), el('th',{},'Stock'), el('th',{},'Seuil min.'), el('th',{},'Statut'))),
+    el('tbody',{}, ...products.map(p=> el('tr',{},
+      el('td',{}, p.nom),
+      el('td',{}, toInt(p.stock)),
+      el('td',{}, toInt(p.stockMinimum||0)),
+      el('td',{}, toInt(p.stock)<=0 ? el('span',{class:'badge badge-danger'},'🔴 Rupture') : el('span',{class:'badge badge-warning'},'⚠ Stock faible'))
+    )))
+  );
+  return table;
+}
+
+/* ==========================================================================
+   PRODUITS
+   ========================================================================== */
+async function renderProducts(root){
+  root.innerHTML = '';
+  const head = el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Produits'), el('div',{class:'sub'}, `${STATE.products.length} produits actifs`)),
+    can('products') ? el('button',{class:'btn btn-primary', onclick:()=>openProductForm()}, '+ Nouveau produit') : ''
+  );
+  const toolbar = el('div',{class:'toolbar'},
+    el('input',{class:'input', style:'max-width:280px;', placeholder:'Rechercher (nom, SKU, code-barres)…', id:'prod-search'}),
+    el('select',{class:'input', style:'max-width:200px;', id:'prod-cat-filter'},
+      el('option',{value:''},'Toutes catégories'),
+      ...Array.from(new Set(STATE.products.map(p=>p.categorie).filter(Boolean))).map(c=>el('option',{value:c},c))
+    )
+  );
+  const tableWrap = el('div',{class:'card'}, el('div',{class:'table-wrap', id:'prod-table-wrap'}));
+  root.append(head, toolbar, tableWrap);
+
+  const draw = ()=>{
+    const term = $('#prod-search').value.trim().toLowerCase();
+    const cat = $('#prod-cat-filter').value;
+    let list = STATE.products.slice();
+    if(term) list = list.filter(p=> [p.nom,p.reference,p.sku,p.codeBarres].some(v=> (v||'').toLowerCase().includes(term)));
+    if(cat) list = list.filter(p=> p.categorie===cat);
+    renderProductTable($('#prod-table-wrap'), list);
+  };
+  $('#prod-search').addEventListener('input', debounce(draw,200));
+  $('#prod-cat-filter').addEventListener('change', draw);
+  draw();
+}
+function renderProductTable(container, list){
+  if(!list.length){ container.innerHTML = `<div class="empty-state"><div class="ic">📦</div><div class="t">Aucun produit</div><div>Ajoutez votre premier produit pour commencer.</div></div>`; return; }
+  container.innerHTML = '';
+  const table = el('table',{},
+    el('thead',{}, el('tr',{},
+      el('th',{},''), el('th',{},'Produit'), el('th',{},'SKU'), el('th',{},'Catégorie'),
+      canEditCostPrice() ? el('th',{},"Prix d'achat") : '',
+      el('th',{},'Prix de vente'), el('th',{},'Stock'), el('th',{},'Statut'), el('th',{},'Actions')
+    )),
+    el('tbody',{}, ...list.map(p=>{
+      const low = toInt(p.stock) <= toInt(p.stockMinimum||0);
+      const out = toInt(p.stock) <= 0;
+      return el('tr',{},
+        el('td',{}, p.photoUrl ? el('img',{src:p.photoUrl, style:'width:36px;height:36px;border-radius:6px;object-fit:cover;'}) : el('div',{style:'width:36px;height:36px;border-radius:6px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;'},'📦')),
+        el('td',{}, el('div',{style:'font-weight:600;'}, p.nom), el('div',{class:'text-faint',style:'font-size:11px;'}, p.reference||'')),
+        el('td',{class:'mono'}, p.sku||'—'),
+        el('td',{}, p.categorie||'—'),
+        canEditCostPrice() ? el('td',{}, money(p.prixAchat)) : '',
+        el('td',{}, money(p.prixVente)),
+        el('td',{}, `${toInt(p.stock)} ${p.unite||''}`),
+        el('td',{}, out? el('span',{class:'badge badge-danger'},'Rupture') : low? el('span',{class:'badge badge-warning'},'Faible') : el('span',{class:'badge badge-success'},'OK')),
+        el('td',{class:'flex gap-6'},
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=>openProductForm(p)}, '✏️'),
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=>duplicateProduct(p)}, '📄'),
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=>toggleProductActive(p)}, p.actif===false?'♻️':'🚫')
+        )
+      );
+    }))
+  );
+  container.appendChild(table);
+}
+function openProductForm(product=null){
+  const isEdit = !!product;
+  const p = product || { nom:'', reference:'', sku:'', codeBarres:'', categorie:'', marque:'', prixAchat:0, prixVente:0, stock:0, stockMinimum:5, unite:'unité', description:'', photoUrl:'', photoPath:'' };
+  let selectedFile = null;
+  const body = el('div',{},
+    el('div',{class:'form-grid'},
+      field('Nom du produit *','p-nom',p.nom),
+      field('Référence','p-ref',p.reference),
+      field('SKU','p-sku',p.sku),
+      field('Code-barres','p-barcode',p.codeBarres),
+      field('Catégorie','p-cat',p.categorie),
+      field('Marque','p-marque',p.marque),
+      canEditCostPrice() ? field("Prix d'achat (FCFA) *",'p-cost',p.prixAchat,'number') : '',
+      field('Prix de vente (FCFA) *','p-price',p.prixVente,'number'),
+      field('Stock actuel *','p-stock',p.stock,'number'),
+      field('Stock minimum','p-min',p.stockMinimum,'number'),
+      field('Unité','p-unit',p.unite),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Description'), el('textarea',{class:'input',id:'p-desc',rows:'2'}, p.description||'')),
+    el('div',{class:'form-row'},
+      el('label',{},'Photo du produit (stockée sur Cloudflare R2)'),
+      p.photoUrl ? el('img',{src:p.photoUrl, style:'width:70px;height:70px;border-radius:8px;object-fit:cover;margin-bottom:8px;display:block;'}) : '',
+      el('input',{type:'file', accept:'image/*', id:'p-photo', onchange:(e)=>{selectedFile=e.target.files[0];}})
+    )
+  );
+  function field(label,id,value,type='text'){
+    return el('div',{class:'form-row'}, el('label',{},label), el('input',{class:'input', id, type, value: value ?? ''}));
+  }
+  openModal({
+    title: isEdit ? 'Modifier le produit' : 'Nouveau produit',
+    body, wide:false,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async ()=>{
+        const nom = $('#p-nom').value.trim();
+        const prixVente = toInt($('#p-price').value);
+        const prixAchat = canEditCostPrice() ? toInt($('#p-cost')?.value) : (p.prixAchat||0);
+        if(!nom){ toast('Le nom du produit est requis.','warning'); return; }
+        if(prixVente<=0){ toast('Le prix de vente doit être positif.','warning'); return; }
+        const btn = event.target; btn.disabled=true; btn.textContent='Enregistrement…';
+        try{
+          let photoUrl = p.photoUrl, photoPath = p.photoPath;
+          if(selectedFile){
+            if(photoPath) await deleteR2File(photoPath).catch(()=>{});
+            const up = await uploadToR2(selectedFile, `products/${p.id||'new_'+uid()}`);
+            photoUrl = up.url; photoPath = up.path;
+          }
+          const data = {
+            nom, reference:$('#p-ref').value.trim(), sku:$('#p-sku').value.trim(), codeBarres:$('#p-barcode').value.trim(),
+            categorie:$('#p-cat').value.trim(), marque:$('#p-marque').value.trim(),
+            prixAchat, prixVente, stockMinimum: toInt($('#p-min').value), unite: $('#p-unit').value.trim()||'unité',
+            description: $('#p-desc').value.trim(), photoUrl, photoPath,
+            boutiqueId: currentStoreId(), actif: true
+          };
+          if(isEdit){
+            const newStock = toInt($('#p-stock').value);
+            if(newStock !== toInt(p.stock)){
+              await adjustStock(p.id, newStock - toInt(p.stock), 'ajustement', 'Ajustement manuel via fiche produit');
+            }
+            await fsUpdate('products', p.id, data);
+            await logAudit('modification','products', p.id, `Produit modifié : ${nom}`);
+            toast('Produit mis à jour.','success');
+          } else {
+            data.stock = toInt($('#p-stock').value);
+            const id = await fsAdd('products', data);
+            if(data.stock>0) await recordStockMovement({ productId:id, type:'entree', quantity:data.stock, previousStock:0, newStock:data.stock, reason:'Stock initial', referenceId:null });
+            await logAudit('creation','products', id, `Produit créé : ${nom}`);
+            toast('Produit créé.','success');
+          }
+          await preloadReferenceData();
+          closeModal();
+          navigateTo('products');
+        }catch(error){ console.error(error); toast(friendlyError(error),'error'); btn.disabled=false; btn.textContent='Enregistrer'; }
+      }}, isEdit?'Enregistrer':'Créer le produit')
+    ]
+  });
+}
+async function duplicateProduct(p){
+  const ok = await confirmDialog(`Dupliquer "${p.nom}" ?`);
+  if(!ok) return;
+  const { id, ...rest } = p;
+  rest.nom = rest.nom + ' (copie)';
+  rest.sku = ''; rest.codeBarres = ''; rest.stock = 0;
+  const newId = await fsAdd('products', rest);
+  await logAudit('creation','products', newId, `Produit dupliqué depuis ${p.nom}`);
+  toast('Produit dupliqué.','success');
+  await preloadReferenceData();
+  navigateTo('products');
+}
+async function toggleProductActive(p){
+  const willBeActive = p.actif === false; // s'il était désactivé, on le réactive
+  await fsUpdate('products', p.id, { actif: willBeActive });
+  await logAudit('modification','products', p.id, `Produit ${willBeActive?'réactivé':'désactivé'} : ${p.nom}`);
+  toast(p.actif===false ? 'Produit réactivé.' : 'Produit désactivé.', 'success');
+  await preloadReferenceData();
+  navigateTo('products');
+}
+
+/* ==========================================================================
+   STOCK — mouvements réels, transaction Firestore, jamais de modif "silencieuse"
+   ========================================================================== */
+async function recordStockMovement({productId, type, quantity, previousStock, newStock, reason, referenceId}){
+  await fsAdd('stockMovements', {
+    productId, type, quantity, previousStock, newStock, reason: reason||'', referenceId: referenceId||null,
+    userId: STATE.user.uid, boutiqueId: currentStoreId(), date: serverTimestamp()
+  });
+}
+/** Ajuste le stock d'un produit de façon atomique (+ ou -) et journalise le mouvement. */
+async function adjustStock(productId, delta, type, reason, referenceId=null){
+  const ref = doc(db, 'products', productId);
+  const result = await runTransaction(db, async (tx)=>{
+    const snap = await tx.get(ref);
+    if(!snap.exists()) throw new Error('Produit introuvable');
+    const previousStock = toInt(snap.data().stock||0);
+    const newStock = previousStock + delta;
+    if(newStock < 0) throw new Error('Stock insuffisant pour cette opération.');
+    tx.update(ref, { stock:newStock, dateModification: serverTimestamp() });
+    return { previousStock, newStock };
+  });
+  await recordStockMovement({ productId, type, quantity: Math.abs(delta), previousStock: result.previousStock, newStock: result.newStock, reason, referenceId });
+  return result;
+}
+async function renderStock(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Stock'), el('div',{class:'sub'},'Mouvements d\'entrée et de sortie'))));
+  const toolbar = el('div',{class:'toolbar'},
+    el('button',{class:'btn btn-primary', onclick:()=>openStockMoveForm('entree')}, '+ Entrée de stock'),
+    el('button',{class:'btn btn-outline', onclick:()=>openStockMoveForm('sortie')}, '− Sortie de stock')
+  );
+  root.append(toolbar);
+
+  const stateGrid = el('div',{class:'stat-grid'},
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Produits en stock faible'), el('div',{class:'value'}, STATE.products.filter(p=>toInt(p.stock)>0 && toInt(p.stock)<=toInt(p.stockMinimum||0)).length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Produits en rupture'), el('div',{class:'value'}, STATE.products.filter(p=>toInt(p.stock)<=0).length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Valeur totale du stock'), el('div',{class:'value'}, money(STATE.products.reduce((a,p)=>a+moneyPlain(p.prixAchat)*toInt(p.stock),0)))),
+  );
+  root.appendChild(stateGrid);
+
+  const movements = await fsGetAll('stockMovements', ...storeScoped(orderBy('date','desc'), limit(80)));
+  const card = el('div',{class:'card'}, el('div',{class:'card-head'}, el('h3',{},'Derniers mouvements')), el('div',{class:'table-wrap'}));
+  const productMap = new Map(STATE.products.map(p=>[p.id,p]));
+  const tbody = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Produit'), el('th',{},'Type'), el('th',{},'Quantité'), el('th',{},'Stock avant → après'), el('th',{},'Raison'))),
+    el('tbody',{}, ...(movements.length? movements.map(m=> el('tr',{},
+      el('td',{}, fmtDate(m.date,true)),
+      el('td',{}, productMap.get(m.productId)?.nom || m.productId),
+      el('td',{}, ['entree','ajustement'].includes(m.type)&&m.quantity>=0 ? el('span',{class:'badge badge-success'}, m.type) : el('span',{class:'badge badge-danger'}, m.type)),
+      el('td',{}, m.quantity),
+      el('td',{}, `${m.previousStock} → ${m.newStock}`),
+      el('td',{class:'text-dim'}, m.reason||'—')
+    )) : [el('tr',{}, el('td',{colspan:'6', class:'empty-state'}, 'Aucun mouvement enregistré'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(tbody);
+  root.appendChild(card);
+}
+function openStockMoveForm(defaultType, defaultProductId=null){
+  const reasonsIn = ['achat','reception','retour_client','ajustement'];
+  const reasonsOut = ['perte','casse','retour_fournisseur','ajustement'];
+  const body = el('div',{},
+    el('div',{class:'form-row'}, el('label',{},'Produit *'),
+      el('select',{class:'input', id:'sm-product'}, ...STATE.products.map(p=>el('option',{value:p.id}, `${p.nom} (stock: ${toInt(p.stock)})`)))),
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Type de mouvement'),
+        el('select',{class:'input', id:'sm-type'}, el('option',{value:'entree'},'Entrée'), el('option',{value:'sortie'},'Sortie'))),
+      el('div',{class:'form-row'}, el('label',{},'Quantité *'), el('input',{class:'input', id:'sm-qty', type:'number', min:'1', value:'1'})),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Motif'),
+      el('select',{class:'input', id:'sm-reason'}, ...[...reasonsIn,...reasonsOut].filter((v,i,a)=>a.indexOf(v)===i).map(r=>el('option',{value:r},r)))
+    )
+  );
+  openModal({
+    title:'Mouvement de stock', body,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async ()=>{
+        const productId = $('#sm-product').value;
+        const type = $('#sm-type').value;
+        const qty = toInt($('#sm-qty').value);
+        const reason = $('#sm-reason').value;
+        if(!productId){ toast('Sélectionnez un produit.','warning'); return; }
+        if(qty<=0){ toast('Quantité invalide.','warning'); return; }
+        try{
+          await adjustStock(productId, type==='entree'?qty:-qty, type, reason);
+          await logAudit('mouvement_stock','stock', productId, `${type} de ${qty} (${reason})`);
+          toast('Mouvement de stock enregistré.','success');
+          await preloadReferenceData();
+          closeModal();
+          navigateTo(STATE.currentSection==='inventory' ? 'inventory' : 'stock');
+        }catch(error){ toast(friendlyError(error),'error'); }
+      }}, 'Valider')
+    ]
+  });
+  setTimeout(()=>{
+    $('#sm-type').value = defaultType;
+    if(defaultProductId){ const sel=$('#sm-product'); if(sel) sel.value = defaultProductId; }
+  }, 0);
+}
+
+/* ==========================================================================
+   INVENTAIRE — vue unifiée du stock : produits, alertes, mouvements.
+   Réutilise entièrement les données et fonctions déjà présentes (STATE.products,
+   adjustStock, recordStockMovement, openStockMoveForm, openProductForm,
+   toggleProductActive...) — aucune nouvelle source de données créée.
+   ========================================================================== */
+async function renderInventory(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Inventaire'), el('div',{class:'sub'}, `${STATE.products.length} produits référencés`)),
+    can('products') ? el('button',{class:'btn btn-primary', onclick:()=>openProductForm()}, '+ Nouveau produit') : ''
+  ));
+
+  const lowStock = STATE.products.filter(p=> toInt(p.stock)>0 && toInt(p.stock)<=toInt(p.stockMinimum||0));
+  const outStock = STATE.products.filter(p=> toInt(p.stock)<=0);
+  const totalValue = STATE.products.reduce((a,p)=>a+moneyPlain(p.prixAchat)*toInt(p.stock),0);
+  root.appendChild(el('div',{class:'stat-grid'},
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Produits référencés'), el('div',{class:'value'}, STATE.products.length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Stock faible'), el('div',{class:'value'}, lowStock.length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Ruptures de stock'), el('div',{class:'value'}, outStock.length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Valeur totale du stock'), el('div',{class:'value'}, money(totalValue))),
+  ));
+
+  const toolbar = el('div',{class:'toolbar'},
+    el('input',{class:'input', style:'max-width:260px;', placeholder:'Rechercher (nom, SKU, code-barres)…', id:'inv-search'}),
+    el('select',{class:'input', style:'max-width:190px;', id:'inv-filter'},
+      el('option',{value:''},'Tous les produits'),
+      el('option',{value:'low'},'Stock faible'),
+      el('option',{value:'out'},'Ruptures uniquement')
+    ),
+    canManageStock() ? el('button',{class:'btn btn-outline', onclick:()=>openStockMoveForm('entree')}, '+ Entrée de stock') : '',
+    canManageStock() ? el('button',{class:'btn btn-outline', onclick:()=>openStockMoveForm('sortie')}, '− Sortie de stock') : ''
+  );
+  root.appendChild(toolbar);
+
+  const tableCard = el('div',{class:'card'}, el('div',{class:'card-head'}, el('h3',{},'Produits & niveaux de stock')), el('div',{class:'table-wrap', id:'inv-table-wrap'}));
+  root.appendChild(tableCard);
+
+  const draw = ()=>{
+    const term = $('#inv-search').value.trim().toLowerCase();
+    const filter = $('#inv-filter').value;
+    let list = STATE.products.slice();
+    if(term) list = list.filter(p=> [p.nom,p.reference,p.sku,p.codeBarres].some(v=>(v||'').toLowerCase().includes(term)));
+    if(filter==='low') list = list.filter(p=> toInt(p.stock)>0 && toInt(p.stock)<=toInt(p.stockMinimum||0));
+    if(filter==='out') list = list.filter(p=> toInt(p.stock)<=0);
+    renderInventoryTable($('#inv-table-wrap'), list);
+  };
+  $('#inv-search').addEventListener('input', debounce(draw,200));
+  $('#inv-filter').addEventListener('change', draw);
+  draw();
+
+  // Journal des mouvements — même source de données que l'onglet Stock, pour
+  // garantir la synchronisation entre les deux vues.
+  const movements = await fsGetAll('stockMovements', ...storeScoped(orderBy('date','desc'), limit(50)));
+  const productMap = new Map(STATE.products.map(p=>[p.id,p]));
+  const moveCard = el('div',{class:'card', style:'margin-top:16px;'}, el('div',{class:'card-head'}, el('h3',{},'Derniers mouvements de stock')), el('div',{class:'table-wrap'}));
+  const moveTable = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Produit'), el('th',{},'Type'), el('th',{},'Quantité'), el('th',{},'Stock avant → après'), el('th',{},'Motif'))),
+    el('tbody',{}, ...(movements.length? movements.map(m=> el('tr',{},
+      el('td',{}, fmtDate(m.date,true)),
+      el('td',{}, productMap.get(m.productId)?.nom || m.productId),
+      el('td',{}, ['entree','ajustement'].includes(m.type)&&m.quantity>=0 ? el('span',{class:'badge badge-success'}, m.type) : el('span',{class:'badge badge-danger'}, m.type)),
+      el('td',{}, m.quantity),
+      el('td',{}, `${m.previousStock} → ${m.newStock}`),
+      el('td',{class:'text-dim'}, m.reason||'—')
+    )) : [el('tr',{}, el('td',{colspan:'6', class:'empty-state'},'Aucun mouvement enregistré'))]))
+  );
+  moveCard.querySelector('.table-wrap').appendChild(moveTable);
+  root.appendChild(moveCard);
+}
+function renderInventoryTable(container, list){
+  if(!list.length){ container.innerHTML = `<div class="empty-state"><div class="ic">📋</div><div class="t">Aucun produit</div><div>Aucun produit ne correspond à ces critères.</div></div>`; return; }
+  container.innerHTML = '';
+  const table = el('table',{},
+    el('thead',{}, el('tr',{},
+      el('th',{},''), el('th',{},'Produit'), el('th',{},'SKU'), el('th',{},'Catégorie'),
+      el('th',{},'Stock'), el('th',{},'Seuil mini'), el('th',{},'Valeur stock'), el('th',{},'Statut'), el('th',{},'Actions')
+    )),
+    el('tbody',{}, ...list.map(p=>{
+      const low = toInt(p.stock)>0 && toInt(p.stock) <= toInt(p.stockMinimum||0);
+      const out = toInt(p.stock) <= 0;
+      return el('tr',{},
+        el('td',{}, p.photoUrl ? el('img',{src:p.photoUrl, style:'width:34px;height:34px;border-radius:6px;object-fit:cover;'}) : el('div',{style:'width:34px;height:34px;border-radius:6px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;'},'📦')),
+        el('td',{}, el('div',{style:'font-weight:600;'}, p.nom), el('div',{class:'text-faint',style:'font-size:11px;'}, p.reference||'')),
+        el('td',{class:'mono'}, p.sku||'—'),
+        el('td',{}, p.categorie||'—'),
+        el('td',{}, `${toInt(p.stock)} ${p.unite||''}`),
+        el('td',{}, toInt(p.stockMinimum||0)),
+        el('td',{}, money(moneyPlain(p.prixAchat)*toInt(p.stock))),
+        el('td',{}, out? el('span',{class:'badge badge-danger'},'Épuisé') : low? el('span',{class:'badge badge-warning'},'Faible') : el('span',{class:'badge badge-success'},'OK')),
+        el('td',{class:'flex gap-6'},
+          canManageProducts() ? el('button',{class:'btn btn-outline btn-sm', title:'Modifier', onclick:()=>openProductForm(p)}, '✏️') : '',
+          canManageStock() ? el('button',{class:'btn btn-outline btn-sm', title:'Entrée de stock', onclick:()=>openStockMoveForm('entree', p.id)}, '📥') : '',
+          canManageStock() ? el('button',{class:'btn btn-outline btn-sm', title:'Sortie de stock', onclick:()=>openStockMoveForm('sortie', p.id)}, '📤') : '',
+          canManageProducts() ? el('button',{class:'btn btn-outline btn-sm', title: p.actif===false?'Réactiver':'Désactiver', onclick:()=>toggleProductActive(p)}, p.actif===false?'♻️':'🚫') : ''
+        )
+      );
+    }))
+  );
+  container.appendChild(table);
+}
+
+/* ==========================================================================
+   POS / VENTES
+   ========================================================================== */
+async function renderPOS(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Point de vente'), el('div',{class:'sub'}, STATE.store?.nom||'Boutique'))));
+  const layout = el('div',{class:'pos-layout'});
+
+  const left = el('div',{class:'pos-left'});
+  left.appendChild(el('div',{class:'pos-search-bar'},
+    el('input',{class:'input', id:'pos-search', placeholder:'Rechercher par nom, SKU ou code-barres…'}),
+    el('button',{class:'btn btn-outline', onclick: openBarcodeManualEntry}, '🔢')
+  ));
+  const cats = ['Tous', ...Array.from(new Set(STATE.products.map(p=>p.categorie).filter(Boolean)))];
+  left.appendChild(el('div',{class:'pos-cats', id:'pos-cats'}, ...cats.map((c,i)=>el('button',{class:`cat-chip ${i===0?'active':''}`, 'data-cat':c, onclick:(e)=>{ $all('.cat-chip').forEach(x=>x.classList.remove('active')); e.target.classList.add('active'); renderPosGrid(c==='Tous'?'':c, $('#pos-search').value); }}, c))));
+  left.appendChild(el('div',{class:'pos-products', id:'pos-products'}));
+  layout.appendChild(left);
+
+  const right = el('div',{class:'pos-right'},
+    el('div',{class:'cart-head'}, el('span',{},'🛒 Panier'), el('button',{class:'btn-ghost btn btn-sm', onclick:()=>{STATE.cart=[]; renderCart();}}, 'Vider')),
+    el('div',{class:'cart-items', id:'cart-items'}),
+    el('div',{class:'cart-summary', id:'cart-summary'}),
+    el('div',{class:'cart-foot'},
+      el('button',{class:'btn btn-outline btn-block', id:'cart-discount-btn'}, '% Remise globale'),
+      el('button',{class:'btn btn-accent btn-block', id:'cart-pay-btn'}, 'Encaisser')
+    )
+  );
+  layout.appendChild(right);
+  root.appendChild(layout);
+
+  $('#pos-search').addEventListener('input', debounce(()=> renderPosGrid($('.cat-chip.active')?.dataset.cat==='Tous'?'':$('.cat-chip.active')?.dataset.cat, $('#pos-search').value), 150));
+  $('#cart-discount-btn').addEventListener('click', openGlobalDiscountForm);
+  $('#cart-pay-btn').addEventListener('click', openPaymentModal);
+
+  renderPosGrid('', '');
+  renderCart();
+}
+function renderPosGrid(cat, term){
+  const grid = $('#pos-products'); if(!grid) return;
+  term = (term||'').toLowerCase();
+  let list = STATE.products.filter(p=> p.actif !== false);
+  if(cat) list = list.filter(p=> p.categorie===cat);
+  if(term) list = list.filter(p=> [p.nom,p.sku,p.reference,p.codeBarres].some(v=>(v||'').toLowerCase().includes(term)));
+  grid.innerHTML = '';
+  if(!list.length){ grid.appendChild(el('div',{class:'empty-state'},'Aucun produit trouvé')); return; }
+  list.forEach(p=>{
+    const out = toInt(p.stock) <= 0;
+    grid.appendChild(el('button',{class:`prod-card ${out?'disabled':''}`, onclick:()=> addToCart(p)},
+      el('div',{class:'prod-thumb'}, p.photoUrl ? el('img',{src:p.photoUrl}) : '📦'),
+      el('div',{class:'p-name'}, p.nom),
+      el('div',{class:'p-price'}, money(p.prixVente)),
+      el('div',{class:'p-stock'}, out? 'Rupture' : `Stock: ${toInt(p.stock)}`)
+    ));
+  });
+}
+function openBarcodeManualEntry(){
+  const body = el('div',{}, el('div',{class:'form-row'}, el('label',{},'Code-barres / SKU / Référence'), el('input',{class:'input', id:'manual-code', placeholder:'Scanner ou saisir le code'})));
+  openModal({
+    title:'Saisie manuelle', body,
+    footButtons:[ el('button',{class:'btn btn-primary', onclick:()=>{
+      const code = $('#manual-code').value.trim();
+      const p = STATE.products.find(p=> [p.codeBarres,p.sku,p.reference].includes(code));
+      if(!p){ toast('Aucun produit ne correspond à ce code.','warning'); return; }
+      addToCart(p); closeModal();
+    }}, 'Ajouter au panier') ]
+  });
+  setTimeout(()=>$('#manual-code')?.focus(),50);
+}
+function addToCart(product){
+  if(!product || !product.id){ toast('Produit non sélectionné.','warning'); return; }
+  if(toInt(product.stock)<=0){ toast('Ce produit est en rupture de stock.','warning'); return; }
+  const existing = STATE.cart.find(i=>i.productId===product.id);
+  if(existing){
+    if(existing.quantite+1 > toInt(product.stock)){ toast('Quantité demandée supérieure au stock disponible.','warning'); return; }
+    existing.quantite++;
+  } else {
+    STATE.cart.push({ productId:product.id, nom:product.nom, prixVente: toInt(product.prixVente), prixAchat: toInt(product.prixAchat||0), quantite:1, remise:0, stockDispo: toInt(product.stock) });
+  }
+  playActionSound();
+  renderCart();
+}
+function renderCart(){
+  const wrap = $('#cart-items'); if(!wrap) return;
+  wrap.innerHTML = '';
+  if(!STATE.cart.length){ wrap.appendChild(el('div',{class:'empty-state'}, el('div',{class:'ic'},'🛒'), 'Panier vide')); }
+  STATE.cart.forEach((item,idx)=>{
+    const subtotal = item.prixVente*item.quantite - moneyPlain(item.remise||0);
+    wrap.appendChild(el('div',{class:'cart-item'},
+      el('div',{style:'flex:1;min-width:0;'},
+        el('div',{class:'ci-name'}, item.nom),
+        el('div',{class:'ci-sub'}, `${money(item.prixVente)} × ${item.quantite} = ${money(subtotal)}`)
+      ),
+      el('div',{class:'qty-ctrl'},
+        el('button',{onclick:()=>changeQty(idx,-1)}, '−'),
+        el('span',{}, item.quantite),
+        el('button',{onclick:()=>changeQty(idx,1)}, '+')
+      ),
+      el('button',{class:'ci-remove', onclick:()=>{STATE.cart.splice(idx,1); renderCart();}}, '✕')
+    ));
+  });
+  const subtotal = STATE.cart.reduce((a,i)=>a+i.prixVente*i.quantite,0);
+  const discount = STATE.cart.reduce((a,i)=>a+moneyPlain(i.remise||0),0) + (STATE.globalDiscount||0);
+  const total = Math.max(0, subtotal - discount);
+  const summary = $('#cart-summary');
+  summary.innerHTML = '';
+  summary.append(
+    el('div',{class:'sum-row'}, el('span',{},'Sous-total'), el('span',{}, money(subtotal))),
+    el('div',{class:'sum-row'}, el('span',{},'Remise'), el('span',{}, '- '+money(discount))),
+    el('div',{class:'sum-row total'}, el('span',{},'Total'), el('span',{}, money(total)))
+  );
+  const payBtn = $('#cart-pay-btn');
+  if(payBtn) payBtn.disabled = STATE.cart.length===0;
+}
+function changeQty(idx, delta){
+  const item = STATE.cart[idx];
+  const newQty = item.quantite + delta;
+  if(newQty<=0){ STATE.cart.splice(idx,1); renderCart(); return; }
+  if(newQty > item.stockDispo){ toast('Quantité supérieure au stock disponible.','warning'); return; }
+  item.quantite = newQty;
+  renderCart();
+}
+function openGlobalDiscountForm(){
+  const body = el('div',{}, el('div',{class:'form-row'}, el('label',{},'Remise globale (montant en FCFA)'), el('input',{class:'input', id:'global-disc', type:'number', value: STATE.globalDiscount||0})));
+  openModal({ title:'Remise globale', body, footButtons:[
+    el('button',{class:'btn btn-primary', onclick:()=>{ STATE.globalDiscount = toInt($('#global-disc').value); renderCart(); closeModal(); }}, 'Appliquer')
+  ]});
+}
+
+/* ------------------------------ PAIEMENTS ------------------------------ */
+const PAYMENT_METHODS = [
+  {key:'especes', label:'Espèces', icon:'💵'},
+  {key:'tmoney', label:'TMoney', icon:'📱'},
+  {key:'flooz', label:'Flooz', icon:'📲'},
+  {key:'virement', label:'Virement', icon:'🏦'},
+  {key:'carte', label:'Carte', icon:'💳'},
+  {key:'autre', label:'Autre', icon:'➕'}
+];
+function openPaymentModal(){
+  if(!STATE.cart.length){ toast('Le panier est vide.','warning'); return; }
+  const subtotal = STATE.cart.reduce((a,i)=>a+i.prixVente*i.quantite,0);
+  const discount = STATE.cart.reduce((a,i)=>a+moneyPlain(i.remise||0),0) + (STATE.globalDiscount||0);
+  const total = Math.max(0, subtotal - discount);
+  const payments = [];
+
+  const body = el('div',{});
+  const custRow = el('div',{class:'form-row'}, el('label',{},'Client (optionnel — requis pour vente à crédit)'),
+    el('select',{class:'input', id:'pay-customer'}, el('option',{value:''},'Client de passage'), ...STATE.customers.map(c=>el('option',{value:c.id}, `${c.prenom||''} ${c.nom||''}`.trim() + (c.telephone? ' — '+c.telephone:'')))));
+  const totalRow = el('div',{class:'sum-row total'}, el('span',{},'Total à payer'), el('span',{id:'pay-total-display'}, money(total)));
+  const methodsGrid = el('div',{class:'pay-methods'}, ...PAYMENT_METHODS.map(m=> el('div',{class:'pay-method'},
+    el('div',{class:'pm-label'}, m.icon+' '+m.label),
+    el('input',{class:'input', type:'number', min:'0', placeholder:'0', id:`pm-${m.key}`, oninput: updateRemaining})
+  )));
+  const remainingBox = el('div',{class:'sum-row', style:'margin-top:8px;'}, el('span',{},'Reste à payer / Monnaie'), el('span',{id:'pay-remaining', style:'font-weight:800;'}, money(total)));
+  const creditNote = el('div',{class:'text-dim', style:'font-size:12px;margin-top:6px;', id:'credit-note'});
+
+  body.append(custRow, totalRow, methodsGrid, remainingBox, creditNote);
+
+  function collectedAmount(){
+    return PAYMENT_METHODS.reduce((a,m)=> a + toInt($(`#pm-${m.key}`)?.value||0), 0);
+  }
+  function updateRemaining(){
+    const collected = collectedAmount();
+    const remaining = total - collected;
+    const box = $('#pay-remaining');
+    if(remaining > 0){ box.textContent = `Reste dû : ${money(remaining)}`; box.style.color = 'var(--danger)'; }
+    else if(remaining < 0){ box.textContent = `Monnaie à rendre : ${money(-remaining)}`; box.style.color = 'var(--success)'; }
+    else { box.textContent = 'Montant exact reçu'; box.style.color = 'var(--success)'; }
+    $('#credit-note').textContent = remaining>0 ? 'Un solde sera enregistré comme dette client (client requis).' : '';
+  }
+  
+
+  openModal({
+    title:'Encaissement', body, wide:true,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async (e)=>{
+        if(!STATE.cart.length){ toast('Le panier est vide.','warning'); return; }
+        const collected = collectedAmount();
+        const remaining = total - collected;
+        const customerId = $('#pay-customer').value || null;
+        if(remaining > 0 && !customerId){ toast('Sélectionnez un client pour enregistrer une vente à crédit.','warning'); return; }
+        if(collected === 0 && total > 0){ toast('Renseignez au moins un mode de paiement.','warning'); return; }
+        // Vérification finale du stock disponible juste avant l'encaissement (le stock
+        // a pu changer depuis l'ajout au panier), pour éviter toute vente invalide.
+        for(const item of STATE.cart){
+          const prod = STATE.products.find(p=>p.id===item.productId);
+          if(!prod){ toast(`Le produit "${item.nom}" est introuvable.`,'error'); return; }
+          if(toInt(prod.stock) < item.quantite){ toast(`Stock insuffisant pour "${item.nom}" (disponible : ${toInt(prod.stock)}).`,'error'); return; }
+        }
+        const btn = e.target; btn.disabled = true; btn.textContent = 'Traitement…';
+        const usedPayments = PAYMENT_METHODS.map(m=>({method:m.key, montant: toInt($(`#pm-${m.key}`)?.value||0)})).filter(p=>p.montant>0);
+        try{
+          const sale = await finalizeSale({ total, subtotal, discount, customerId, payments: usedPayments, amountPaid: Math.min(collected,total), remaining: Math.max(remaining,0) });
+          closeModal();
+          openReceiptModal(sale);
+        }catch(error){ console.error(error); toast(friendlyError(error),'error'); btn.disabled=false; btn.textContent='Valider le paiement'; }
+      }}, 'Valider le paiement')
+    ]
+  });
+  updateRemaining();
+}
+
+/** Enregistre la vente de façon transactionnelle : décrémente le stock produit par produit,
+ *  enregistre les mouvements de stock, met à jour la dette client si nécessaire,
+ *  crédite la caisse ouverte, et journalise l'audit. */
+async function finalizeSale({ total, subtotal, discount, customerId, payments, amountPaid, remaining }){
+  const numero = await nextNumber('VTE');
+  const items = STATE.cart.map(i=>({ productId:i.productId, nom:i.nom, prixVente:i.prixVente, prixAchat:i.prixAchat, quantite:i.quantite, remise:moneyPlain(i.remise||0) }));
+
+  // 1) Décrément atomique du stock pour chaque article + mouvement de stock.
+  //    Si un article échoue en cours de route (stock insuffisant détecté au dernier
+  //    moment, coupure réseau, etc.), on annule (rollback) les décréments déjà
+  //    effectués pour les articles précédents afin de ne JAMAIS corrompre le stock.
+  const adjustedItems = [];
+  try{
+    for(const item of items){
+      await adjustStock(item.productId, -item.quantite, 'vente', `Vente ${numero}`, null);
+      adjustedItems.push(item);
+    }
+  }catch(stockError){
+    for(const item of adjustedItems){
+      try{ await adjustStock(item.productId, item.quantite, 'ajustement', `Annulation automatique — échec vente ${numero}`, null); }
+      catch(rollbackError){ console.error('Échec du rollback de stock', rollbackError); }
+    }
+    throw stockError;
+  }
+
+  const statutPaiement = remaining>0 ? (amountPaid>0 ? 'partiel' : 'credit') : 'payee';
+  const saleData = {
+    numero, items, subtotal: moneyPlain(subtotal), discount: moneyPlain(discount), total: moneyPlain(total),
+    amountPaid: moneyPlain(amountPaid), remaining: moneyPlain(remaining), payments, customerId: customerId||null,
+    statut:'validee', statutPaiement, vendeurId: STATE.user.uid,
+    vendeurNom: `${STATE.profile.prenom||''} ${STATE.profile.nom||''}`.trim(),
+    boutiqueId: currentStoreId(), boutiqueNom: STATE.store?.nom||'', date: serverTimestamp()
+  };
+  const saleId = await fsAdd('sales', saleData);
+
+  // 2) Mise à jour de la dette client si vente à crédit/partielle
+  if(customerId && remaining>0){
+    const custRef = doc(db,'customers',customerId);
+    await runTransaction(db, async(tx)=>{
+      const snap = await tx.get(custRef);
+      const currentDebt = snap.exists() ? moneyPlain(snap.data().soldeDette||0) : 0;
+      tx.update(custRef, { soldeDette: currentDebt + moneyPlain(remaining) });
+    });
+  }
+
+  // 3) Mise à jour de la caisse ouverte (si une session de caisse est active)
+  await addCashMovementIfOpen({ type:'recette', montant: moneyPlain(amountPaid), description:`Vente ${numero}`, referenceId:saleId });
+
+  // 4) Journal d'audit
+  await logAudit('vente','sales', saleId, `Vente ${numero} — ${money(total)}`);
+
+  STATE.cart = []; STATE.globalDiscount = 0;
+  await preloadReferenceData();
+  toast(`Vente ${numero} enregistrée avec succès.`, 'success');
+  return { id:saleId, ...saleData, date:new Date() };
+}
+
+/* ------------------------------ REÇU ------------------------------ */
+function openReceiptModal(sale){
+  const body = el('div',{class:'receipt', id:'receipt-content'});
+  body.appendChild(buildReceiptDOM(sale));
+  openModal({
+    title:`Reçu ${sale.numero}`, body,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:()=>printReceipt(sale)},'🖨️ Imprimer'),
+      el('button',{class:'btn btn-outline', onclick:()=>shareReceiptWhatsApp(sale)},'📲 WhatsApp'),
+      el('button',{class:'btn btn-primary', onclick:()=>{closeModal(); navigateTo('pos');}}, 'Nouvelle vente')
+    ]
+  });
+}
+function buildReceiptDOM(sale){
+  const cust = STATE.customers.find(c=>c.id===sale.customerId);
+  const wrap = el('div',{},
+    el('div',{class:'r-center'}, el('div',{style:'font-weight:800;font-size:14px;'}, STATE.store?.nom||'BRAINY STORE')),
+    el('div',{class:'r-center text-faint'}, STATE.store?.adresse||'', ' ', STATE.store?.telephone||''),
+    el('hr'),
+    el('div',{class:'r-row'}, el('span',{},'Reçu N°'), el('span',{}, sale.numero)),
+    el('div',{class:'r-row'}, el('span',{},'Date'), el('span',{}, fmtDate(sale.date,true))),
+    el('div',{class:'r-row'}, el('span',{},'Vendeur'), el('span',{}, sale.vendeurNom)),
+    cust ? el('div',{class:'r-row'}, el('span',{},'Client'), el('span',{}, `${cust.prenom||''} ${cust.nom||''}`)) : '',
+    el('hr'),
+    ...sale.items.map(i=> el('div',{},
+      el('div',{}, i.nom),
+      el('div',{class:'r-row'}, el('span',{}, `${i.quantite} × ${money(i.prixVente)}`), el('span',{}, money(i.prixVente*i.quantite - (i.remise||0))))
+    )),
+    el('hr'),
+    el('div',{class:'r-row'}, el('span',{},'Sous-total'), el('span',{}, money(sale.subtotal))),
+    el('div',{class:'r-row'}, el('span',{},'Remise'), el('span',{}, '-'+money(sale.discount))),
+    el('div',{class:'r-row r-total'}, el('span',{},'TOTAL'), el('span',{}, money(sale.total))),
+    el('hr'),
+    ...(sale.payments||[]).map(p=> el('div',{class:'r-row'}, el('span',{}, PAYMENT_METHODS.find(m=>m.key===p.method)?.label||p.method), el('span',{}, money(p.montant)))),
+    sale.remaining>0 ? el('div',{class:'r-row', style:'font-weight:700;'}, el('span',{},'Solde restant'), el('span',{}, money(sale.remaining))) : '',
+    el('hr'),
+    el('div',{class:'r-center text-faint'}, 'Merci pour votre achat !')
+  );
+  return wrap;
+}
+function printReceipt(sale){
+  const area = $('#print-area');
+  area.innerHTML = '';
+  area.appendChild(buildReceiptDOM(sale));
+  area.firstChild.classList.add('receipt');
+  window.print();
+}
+function shareReceiptWhatsApp(sale){
+  const lines = [
+    `*${STATE.store?.nom||'BRAINY STORE'}*`,
+    `Reçu N° ${sale.numero}`,
+    `Date: ${fmtDate(sale.date,true)}`,
+    '',
+    ...sale.items.map(i=> `${i.nom} — ${i.quantite} x ${money(i.prixVente)} = ${money(i.prixVente*i.quantite-(i.remise||0))}`),
+    '',
+    `Total: ${money(sale.total)}`,
+    sale.remaining>0 ? `Solde restant: ${money(sale.remaining)}` : 'Payé intégralement',
+    '',
+    'Merci pour votre achat !'
+  ];
+  const text = encodeURIComponent(lines.join('\n'));
+  window.open(`https://wa.me/?text=${text}`, '_blank');
+}
+
+/* ==========================================================================
+   HISTORIQUE DES VENTES
+   ========================================================================== */
+async function renderSales(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Historique des ventes'))));
+  const sales = await fsGetAll('sales', ...storeScoped(orderBy('date','desc'), limit(150)));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const tbody = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'N°'), el('th',{},'Date'), el('th',{},'Vendeur'), el('th',{},'Total'), el('th',{},'Statut'), el('th',{},'Paiement'), el('th',{},''))),
+    el('tbody',{}, ...(sales.length? sales.map(s=> el('tr',{},
+      el('td',{class:'mono'}, s.numero),
+      el('td',{}, fmtDate(s.date,true)),
+      el('td',{}, s.vendeurNom),
+      el('td',{style:'font-weight:700;'}, money(s.total)),
+      el('td',{}, s.statut==='annulee'? el('span',{class:'badge badge-danger'},'Annulée') : el('span',{class:'badge badge-success'},'Validée')),
+      el('td',{}, s.statutPaiement==='payee'?el('span',{class:'badge badge-success'},'Payée'):s.statutPaiement==='partiel'?el('span',{class:'badge badge-warning'},'Partielle'):el('span',{class:'badge badge-danger'},'Crédit')),
+      el('td',{}, el('button',{class:'btn btn-outline btn-sm', onclick:()=>openReceiptModal({...s, date:toDate(s.date)})}, 'Voir reçu'))
+    )) : [el('tr',{}, el('td',{colspan:'7',class:'empty-state'},'Aucune vente enregistrée'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(tbody);
+  root.appendChild(card);
+}
+
+/* ==========================================================================
+   CLIENTS
+   ========================================================================== */
+async function renderCustomers(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Clients'), el('div',{class:'sub'}, `${STATE.customers.length} clients`)),
+    el('button',{class:'btn btn-primary', onclick:()=>openCustomerForm()}, '+ Nouveau client')
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const tbody = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Téléphone'), el('th',{},'Points fidélité'), el('th',{},'Dette'), el('th',{},''))),
+    el('tbody',{}, ...(STATE.customers.length? STATE.customers.map(c=> el('tr',{},
+      el('td',{style:'font-weight:600;'}, `${c.prenom||''} ${c.nom||''}`.trim()||'—'),
+      el('td',{}, c.telephone||'—'),
+      el('td',{}, toInt(c.pointsFidelite||0)),
+      el('td',{}, moneyPlain(c.soldeDette)>0? el('span',{class:'badge badge-danger'}, money(c.soldeDette)) : el('span',{class:'badge badge-success'},'Aucune')),
+      el('td',{class:'flex gap-6'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openCustomerForm(c)}, '✏️'),
+        moneyPlain(c.soldeDette)>0 ? el('button',{class:'btn btn-accent btn-sm', onclick:()=>openCustomerPaymentForm(c)}, '💳 Paiement') : ''
+      )
+    )) : [el('tr',{}, el('td',{colspan:'5',class:'empty-state'},'Aucun client'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(tbody);
+  root.appendChild(card);
+}
+function openCustomerForm(customer=null){
+  const isEdit = !!customer;
+  const c = customer || { nom:'', prenom:'', telephone:'', email:'', adresse:'', ville:'', notes:'' };
+  const body = el('div',{class:'form-grid'},
+    field('Prénom','c-prenom',c.prenom), field('Nom','c-nom',c.nom),
+    field('Téléphone *','c-tel',c.telephone), field('Email','c-email',c.email),
+    field('Adresse','c-addr',c.adresse), field('Ville','c-ville',c.ville)
+  );
+  function field(label,id,v){ return el('div',{class:'form-row'}, el('label',{},label), el('input',{class:'input', id, value:v||''})); }
+  openModal({ title: isEdit?'Modifier le client':'Nouveau client', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const telephone = $('#c-tel').value.trim();
+      if(!telephone){ toast('Le téléphone est requis.','warning'); return; }
+      const data = { nom:$('#c-nom').value.trim(), prenom:$('#c-prenom').value.trim(), telephone, email:$('#c-email').value.trim(), adresse:$('#c-addr').value.trim(), ville:$('#c-ville').value.trim(), boutiqueId: currentStoreId() };
+      try{
+        if(isEdit){ await fsUpdate('customers', c.id, data); await logAudit('modification','customers', c.id, 'Client modifié'); toast('Client mis à jour.','success'); }
+        else { data.pointsFidelite=0; data.soldeDette=0; const id = await fsAdd('customers', data); await logAudit('creation','customers', id, 'Client créé'); toast('Client créé.','success'); }
+        await preloadReferenceData(); closeModal(); navigateTo('customers');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+}
+function openCustomerPaymentForm(customer){
+  const body = el('div',{},
+    el('p',{class:'text-dim', style:'margin-bottom:10px;'}, `Dette actuelle : ${money(customer.soldeDette)}`),
+    el('div',{class:'form-row'}, el('label',{},'Montant reçu (FCFA)'), el('input',{class:'input', id:'cp-amount', type:'number', max:customer.soldeDette})),
+    el('div',{class:'form-row'}, el('label',{},'Mode de paiement'), el('select',{class:'input', id:'cp-method'}, ...PAYMENT_METHODS.map(m=>el('option',{value:m.key},m.label))))
+  );
+  openModal({ title:'Paiement client', body, footButtons:[
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const amount = toInt($('#cp-amount').value);
+      if(amount<=0 || amount>moneyPlain(customer.soldeDette)){ toast('Montant invalide.','warning'); return; }
+      try{
+        const custRef = doc(db,'customers',customer.id);
+        await runTransaction(db, async(tx)=>{
+          const snap = await tx.get(custRef);
+          const debt = moneyPlain(snap.data().soldeDette||0);
+          tx.update(custRef, { soldeDette: Math.max(0, debt-amount) });
+        });
+        await fsAdd('customerPayments', { customerId:customer.id, montant:amount, methode:$('#cp-method').value, boutiqueId:currentStoreId(), userId:STATE.user.uid, date:serverTimestamp() });
+        await addCashMovementIfOpen({ type:'recette', montant:amount, description:`Paiement dette client ${customer.prenom||''} ${customer.nom||''}`, referenceId:customer.id });
+        await logAudit('paiement','customers', customer.id, `Paiement de ${money(amount)} reçu`);
+        toast('Paiement enregistré.','success');
+        await preloadReferenceData(); closeModal(); navigateTo('customers');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, 'Enregistrer le paiement')
+  ]});
+}
+
+/* ==========================================================================
+   CAISSE
+   ========================================================================== */
+let CURRENT_CASH_SESSION = null;
+async function getOpenCashSession(){
+  if(CURRENT_CASH_SESSION) return CURRENT_CASH_SESSION;
+  const list = await fsGetAll('cashRegisters', ...storeScoped(where('statut','==','ouverte')));
+  CURRENT_CASH_SESSION = list[0] || null;
+  return CURRENT_CASH_SESSION;
+}
+async function addCashMovementIfOpen({type, montant, description, referenceId}){
+  const session = await getOpenCashSession();
+  if(!session || montant<=0) return;
+  await fsAdd('cashMovements', { cashRegisterId:session.id, type, montant:moneyPlain(montant), description, referenceId:referenceId||null, userId:STATE.user.uid, boutiqueId:currentStoreId(), date:serverTimestamp() });
+}
+async function renderCashRegister(root){
+  root.innerHTML = '';
+  const session = await getOpenCashSession();
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Caisse'), el('div',{class:'sub'}, session ? `Session ouverte depuis ${fmtDate(session.dateOuverture,true)}` : 'Aucune session ouverte'))));
+
+  if(!session){
+    const body = el('div',{class:'card'}, el('div',{class:'card-body'},
+      el('p',{class:'text-dim', style:'margin-bottom:14px;'},"Ouvrez une session de caisse pour commencer à enregistrer les recettes et dépenses de la journée."),
+      el('div',{class:'form-row'}, el('label',{},'Fonds de caisse initial (FCFA)'), el('input',{class:'input', id:'cash-init', type:'number', value:'0'})),
+      el('button',{class:'btn btn-primary', onclick: async ()=>{
+        const fond = toInt($('#cash-init').value);
+        const id = await fsAdd('cashRegisters', { fondInitial:fond, statut:'ouverte', boutiqueId:currentStoreId(), userId:STATE.user.uid, dateOuverture:serverTimestamp() });
+        CURRENT_CASH_SESSION = { id, fondInitial:fond, statut:'ouverte' };
+        await logAudit('ouverture_caisse','cashregister', id, `Caisse ouverte avec ${money(fond)}`);
+        toast('Caisse ouverte.','success');
+        navigateTo('cashregister');
+      }}, 'Ouvrir la caisse')
+    ));
+    root.appendChild(body);
+    return;
+  }
+
+  const movements = await fsGetAll('cashMovements', where('cashRegisterId','==',session.id), orderBy('date','desc'));
+  const recettes = movements.filter(m=>m.type==='recette').reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const depenses = movements.filter(m=>m.type==='depense').reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const retraits = movements.filter(m=>m.type==='retrait').reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const versements = movements.filter(m=>m.type==='versement').reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const theorique = moneyPlain(session.fondInitial) + recettes - depenses - retraits + versements;
+
+  root.appendChild(el('div',{class:'stat-grid'},
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Fonds initial'), el('div',{class:'value'}, money(session.fondInitial))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Recettes'), el('div',{class:'value'}, money(recettes))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Dépenses'), el('div',{class:'value'}, money(depenses))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Caisse théorique'), el('div',{class:'value'}, money(theorique))),
+  ));
+
+  const toolbar = el('div',{class:'toolbar'},
+    el('button',{class:'btn btn-outline', onclick:()=>openCashMovementForm('retrait')},'− Retrait'),
+    el('button',{class:'btn btn-outline', onclick:()=>openCashMovementForm('versement')},'+ Versement'),
+    el('button',{class:'btn btn-danger', onclick:()=>openCashCloseForm(session, theorique)}, '🔒 Clôturer la caisse')
+  );
+  root.appendChild(toolbar);
+
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const tbody = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Type'), el('th',{},'Description'), el('th',{},'Montant'))),
+    el('tbody',{}, ...(movements.length? movements.map(m=> el('tr',{},
+      el('td',{}, fmtDate(m.date,true)),
+      el('td',{}, badgeForCashType(m.type)),
+      el('td',{}, m.description||'—'),
+      el('td',{style:'font-weight:700;'}, money(m.montant))
+    )) : [el('tr',{}, el('td',{colspan:'4',class:'empty-state'},'Aucun mouvement'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(tbody);
+  root.appendChild(card);
+}
+function badgeForCashType(type){
+  const map = { recette:['badge-success','Recette'], depense:['badge-danger','Dépense'], retrait:['badge-warning','Retrait'], versement:['badge-info','Versement'] };
+  const [cls,label] = map[type]||['badge-neutral',type];
+  return el('span',{class:`badge ${cls}`}, label);
+}
+function openCashMovementForm(type){
+  const body = el('div',{},
+    el('div',{class:'form-row'}, el('label',{},'Montant (FCFA)'), el('input',{class:'input', id:'cm-amount', type:'number'})),
+    el('div',{class:'form-row'}, el('label',{},'Description'), el('input',{class:'input', id:'cm-desc'}))
+  );
+  openModal({ title: type==='retrait'?'Retrait de caisse':'Versement en caisse', body, footButtons:[
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const montant = toInt($('#cm-amount').value);
+      if(montant<=0){ toast('Montant invalide.','warning'); return; }
+      await addCashMovementIfOpen({ type, montant, description: $('#cm-desc').value.trim() });
+      await logAudit(type,'cashregister', null, `${type} de ${money(montant)}`);
+      toast('Mouvement enregistré.','success');
+      closeModal(); navigateTo('cashregister');
+    }}, 'Valider')
+  ]});
+}
+function openCashCloseForm(session, theorique){
+  const body = el('div',{},
+    el('p',{class:'text-dim'}, `Caisse théorique calculée : ${money(theorique)}`),
+    el('div',{class:'form-row', style:'margin-top:10px;'}, el('label',{},'Montant réellement compté (FCFA)'), el('input',{class:'input', id:'cash-real', type:'number'}))
+  );
+  openModal({ title:'Clôture de caisse', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-danger', onclick: async ()=>{
+      const reel = toInt($('#cash-real').value);
+      const ecart = reel - theorique;
+      await fsUpdate('cashRegisters', session.id, { statut:'fermee', caisseTheorique:theorique, caisseReelle:reel, ecart, dateFermeture:serverTimestamp() });
+      await logAudit('cloture_caisse','cashregister', session.id, `Clôture — théorique ${money(theorique)}, réelle ${money(reel)}, écart ${money(ecart)}`);
+      CURRENT_CASH_SESSION = null;
+      toast(`Caisse clôturée. Écart : ${money(ecart)}`, Math.abs(ecart)>0?'warning':'success');
+      closeModal(); navigateTo('cashregister');
+    }}, 'Clôturer')
+  ]});
+}
+
+/* ==========================================================================
+   DÉPENSES
+   ========================================================================== */
+const EXPENSE_CATEGORIES = ['Loyer','Salaires','Transport','Fournitures','Électricité / Eau','Marketing','Entretien / Réparation','Impôts & Taxes','Autre'];
+
+async function renderExpenses(root){
+  root.innerHTML='';
+  if(!canManageFinance()){
+    root.innerHTML = `<div class="empty-state"><div class="ic">🔒</div><div class="t">Accès réservé</div><div>Seuls le Super Administrateur et le Gérant gèrent les dépenses.</div></div>`;
+    return;
+  }
+  STATE._expenseFilter = STATE._expenseFilter || { periode:'month', categorie:'' };
+  const f = STATE._expenseFilter;
+  const range = periodRange(f.periode);
+  let expenses = [];
+  try{
+    expenses = await fsGetAll('expenses', ...storeScoped(orderBy('date','desc'), limit(500)));
+  }catch(e){ expenses = await fsGetAll('expenses', ...storeScoped()); expenses.sort((a,b)=> toDateSafe(b.date)-toDateSafe(a.date)); }
+  expenses = expenses.filter(x=> inRange(x.date, range) && (!f.categorie || x.categorie===f.categorie));
+  const total = expenses.reduce((a,x)=>a+moneyPlain(x.montant),0);
+
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Dépenses'), el('div',{class:'sub'}, `${expenses.length} dépense(s) — total ${money(total)}`)),
+    el('button',{class:'btn btn-primary', onclick: ()=> openExpenseFormModal(null)}, '+ Nouvelle dépense')
+  ));
+
+  root.appendChild(el('div',{class:'toolbar'},
+    periodSelect(f.periode, v=>{ f.periode=v; navigateTo('expenses'); }),
+    el('select',{class:'input', style:'max-width:220px;', onchange:(e)=>{ f.categorie=e.target.value; navigateTo('expenses'); }},
+      el('option',{value:''},'Toutes les catégories'),
+      ...EXPENSE_CATEGORIES.map(c=> el('option',{value:c, selected:f.categorie===c?'selected':null}, c))
+    )
+  ));
+
+  const byCategorie = {};
+  expenses.forEach(x=>{ byCategorie[x.categorie||'Autre'] = (byCategorie[x.categorie||'Autre']||0) + moneyPlain(x.montant); });
+  if(expenses.length){
+    root.appendChild(el('div',{class:'stat-grid'},
+      ...Object.entries(byCategorie).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([cat,amt])=>
+        el('div',{class:'stat-card'}, el('div',{class:'label'},cat), el('div',{class:'value'}, money(amt)))
+      )
+    ));
+  }
+
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Libellé'), el('th',{},'Catégorie'), el('th',{},'Moyen'), el('th',{},'Montant'), el('th',{},'Justificatif'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(expenses.length? expenses.map(x=> el('tr',{},
+      el('td',{}, fmtDate(x.date,true)),
+      el('td',{}, x.libelle||'—'),
+      el('td',{}, el('span',{class:'badge badge-neutral'}, x.categorie||'Autre')),
+      el('td',{}, PAYMENT_METHODS.find(m=>m.key===x.moyenPaiement)?.label || x.moyenPaiement || '—'),
+      el('td',{style:'font-weight:700;color:var(--danger);'}, '-'+money(x.montant)),
+      el('td',{}, x.justificatifUrl ? el('a',{href:x.justificatifUrl, target:'_blank', class:'btn btn-outline btn-sm'},'📎 Voir') : '—'),
+      el('td',{}, el('div',{style:'display:flex; gap:6px;'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openExpenseFormModal(x)},'Modifier'),
+        el('button',{class:'btn btn-danger btn-sm', onclick:()=>deleteExpense(x)},'Suppr.')
+      ))
+    )) : [el('tr',{}, el('td',{colspan:'7',class:'empty-state'},'Aucune dépense sur cette période'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+
+function openExpenseFormModal(expense){
+  const isEdit = !!expense;
+  let selectedFile = null;
+  const body = el('div',{},
+    el('div',{class:'form-row'}, el('label',{},'Libellé *'), el('input',{class:'input', id:'ex-libelle', value:expense?.libelle||''})),
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Catégorie'),
+        el('select',{class:'input', id:'ex-cat'}, ...EXPENSE_CATEGORIES.map(c=>el('option',{value:c, selected:(expense?.categorie||EXPENSE_CATEGORIES[0])===c?'selected':null},c)))),
+      el('div',{class:'form-row'}, el('label',{},'Montant (FCFA) *'), el('input',{class:'input', id:'ex-montant', type:'number', value:expense?.montant||''})),
+    ),
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Moyen de paiement'),
+        el('select',{class:'input', id:'ex-moyen'}, ...PAYMENT_METHODS.map(m=>el('option',{value:m.key, selected:(expense?.moyenPaiement||'especes')===m.key?'selected':null},m.label)))),
+      el('div',{class:'form-row'}, el('label',{},'Date'), el('input',{class:'input', id:'ex-date', type:'date', value: expense?.date ? toDateSafe(expense.date).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)})),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'ex-notes', rows:'2'}, expense?.notes||'')),
+    el('div',{class:'form-row'}, el('label',{},'Justificatif (facture, reçu…)'),
+      el('input',{type:'file', accept:'image/*,.pdf', id:'ex-file', onchange:(e)=>{ selectedFile = e.target.files[0]||null; }}),
+      expense?.justificatifUrl ? el('div',{class:'text-faint', style:'font-size:12px;margin-top:4px;'}, 'Un justificatif est déjà attaché — en choisir un nouveau le remplacera.') : ''
+    )
+  );
+  openModal({
+    title: isEdit? 'Modifier la dépense' : 'Nouvelle dépense', body,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async (e)=>{
+        const btn = e.currentTarget; btn.disabled = true;
+        try{
+          const libelle = $('#ex-libelle').value.trim();
+          const montant = toInt($('#ex-montant').value);
+          const categorie = $('#ex-cat').value, moyenPaiement = $('#ex-moyen').value;
+          const dateVal = $('#ex-date').value ? new Date($('#ex-date').value) : new Date();
+          const notes = $('#ex-notes').value.trim();
+          if(!libelle || montant<=0){ toast('Libellé et montant valides requis.','warning'); btn.disabled=false; return; }
+          const data = { libelle, categorie, montant, moyenPaiement, date: Timestamp.fromDate(dateVal), notes, boutiqueId: currentStoreId(), userId: STATE.user.uid, userName: `${STATE.profile.prenom||''} ${STATE.profile.nom||''}`.trim() };
+          let expenseId;
+          if(isEdit){ await fsUpdate('expenses', expense.id, data); expenseId = expense.id; }
+          else { expenseId = await fsAdd('expenses', data); }
+          if(selectedFile){
+            if(isEdit && expense.justificatifPath) await deleteR2File(expense.justificatifPath).catch(()=>{});
+            const up = await uploadToR2(selectedFile, `expenses/${expenseId}/files`);
+            await fsUpdate('expenses', expenseId, { justificatifUrl: up.url, justificatifPath: up.path });
+          }
+          // Si la dépense est payée en espèces et qu'une session de caisse est ouverte,
+          // elle impacte réellement la caisse théorique (cohérence Caisse <-> Dépenses).
+          if(!isEdit && moyenPaiement==='especes'){
+            await addCashMovementIfOpen({ type:'depense', montant, description:`Dépense — ${libelle}`, referenceId:expenseId });
+          }
+          await logAudit(isEdit?'modification':'creation','expenses', expenseId, `Dépense "${libelle}" — ${money(montant)}`);
+          toast(isEdit?'Dépense mise à jour.':'Dépense enregistrée.','success');
+          closeModal(); navigateTo('expenses');
+        }catch(err){ toast(friendlyError(err),'error'); btn.disabled=false; }
+      }}, isEdit?'Enregistrer':'Ajouter')
+    ]
+  });
+}
+async function deleteExpense(expense){
+  const ok = await confirmDialog(`Supprimer la dépense "${expense.libelle}" (${money(expense.montant)}) ?`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{
+    if(expense.justificatifPath) await deleteR2File(expense.justificatifPath).catch(()=>{});
+    await fsDelete('expenses', expense.id);
+    await logAudit('suppression','expenses', expense.id, `Dépense "${expense.libelle}" supprimée`);
+    toast('Dépense supprimée.','success');
+    navigateTo('expenses');
+  }catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   FINANCE — vue consolidée (ventes, dépenses, achats, mouvements manuels)
+   ========================================================================== */
+function periodRange(key){
+  const now = new Date();
+  if(key==='today') return { start:startOfDay(now), end:now };
+  if(key==='week') return { start:startOfWeek(now), end:now };
+  if(key==='year') return { start:startOfYear(now), end:now };
+  if(key==='all') return { start:new Date(2000,0,1), end:now };
+  return { start:startOfMonth(now), end:now }; // 'month' par défaut
+}
+function periodSelect(current, onChange){
+  const opts = [['today','Aujourd\'hui'],['week','Cette semaine'],['month','Ce mois-ci'],['year','Cette année'],['all','Tout']];
+  return el('select',{class:'input', style:'max-width:200px;', onchange:(e)=>onChange(e.target.value)},
+    ...opts.map(([v,l])=> el('option',{value:v, selected:current===v?'selected':null}, l)));
+}
+function toDateSafe(v){
+  if(!v) return new Date(0);
+  if(v.toDate) return v.toDate();
+  return new Date(v);
+}
+function inRange(dateVal, range){
+  const d = toDateSafe(dateVal);
+  return d >= range.start && d <= new Date(range.end.getTime()+86400000);
+}
+
+async function renderFinance(root){
+  root.innerHTML='';
+  if(!canManageFinance()){
+    root.innerHTML = `<div class="empty-state"><div class="ic">🔒</div><div class="t">Accès réservé</div><div>Seuls le Super Administrateur et le Gérant consultent la finance globale.</div></div>`;
+    return;
+  }
+  STATE._financePeriod = STATE._financePeriod || 'month';
+  const range = periodRange(STATE._financePeriod);
+
+  const [sales, customerPayments, expenses] = await Promise.all([
+    fsGetAll('sales', ...storeScoped()).catch(()=>[]),
+    fsGetAll('customerPayments', ...storeScoped()).catch(()=>[]),
+    fsGetAll('expenses', ...storeScoped()).catch(()=>[])
+  ]);
+  // Achats : module de la Phase 3 (Lot 3). On l'interroge dès maintenant, en toute
+  // sécurité (try/catch), afin que la Finance reflète automatiquement les achats
+  // dès qu'ils existeront, sans qu'il soit nécessaire de retoucher ce module.
+  let purchases = [];
+  try{ purchases = await fsGetAll('purchases', ...storeScoped()); }catch(e){ purchases = []; }
+  let financeMovements = [];
+  try{ financeMovements = await fsGetAll('financeMovements', ...storeScoped()); }catch(e){ financeMovements = []; }
+
+  const salesInRange = sales.filter(s=> inRange(s.date, range) && s.statut==='validee');
+  const paymentsInRange = customerPayments.filter(p=> inRange(p.date, range));
+  const expensesInRange = expenses.filter(x=> inRange(x.date, range));
+  const purchasesInRange = purchases.filter(p=> inRange(p.date||p.dateCreation, range) && p.statut!=='annulee');
+  const manualRecettes = financeMovements.filter(m=> inRange(m.date, range) && m.type==='recette');
+  const manualDepenses = financeMovements.filter(m=> inRange(m.date, range) && m.type==='depense');
+
+  const recetteVentes = salesInRange.reduce((a,s)=>a+moneyPlain(s.amountPaid),0);
+  const recettePaiements = paymentsInRange.reduce((a,p)=>a+moneyPlain(p.montant),0);
+  const recetteManuelle = manualRecettes.reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const totalRecettes = recetteVentes + recettePaiements + recetteManuelle;
+
+  const depenseCourantes = expensesInRange.reduce((a,x)=>a+moneyPlain(x.montant),0);
+  const depenseAchats = purchasesInRange.reduce((a,p)=>a+moneyPlain(p.totalTTC||p.total||0),0);
+  const depenseManuelle = manualDepenses.reduce((a,m)=>a+moneyPlain(m.montant),0);
+  const totalDepenses = depenseCourantes + depenseAchats + depenseManuelle;
+
+  const solde = totalRecettes - totalDepenses;
+  const coutVenduTotal = salesInRange.reduce((a,s)=> a + (s.items||[]).reduce((b,i)=>b+i.prixAchat*i.quantite,0), 0);
+  const beneficeBrut = salesInRange.reduce((a,s)=>a+moneyPlain(s.total),0) - coutVenduTotal;
+
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Finance'), el('div',{class:'sub'},'Vue consolidée des recettes, dépenses et achats')),
+    el('div',{style:'display:flex; gap:8px;'},
+      periodSelect(STATE._financePeriod, v=>{ STATE._financePeriod=v; navigateTo('finance'); }),
+      el('button',{class:'btn btn-primary', onclick:()=>openFinanceMovementForm()}, '+ Mouvement financier')
+    )
+  ));
+
+  root.appendChild(el('div',{class:'stat-grid'},
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Total recettes'), el('div',{class:'value', style:'color:var(--success);'}, money(totalRecettes))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Total dépenses'), el('div',{class:'value', style:'color:var(--danger);'}, money(totalDepenses))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Solde net'), el('div',{class:'value', style:`color:${solde>=0?'var(--success)':'var(--danger)'};`}, money(solde))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'Bénéfice brut ventes'), el('div',{class:'value'}, money(beneficeBrut))),
+  ));
+
+  root.appendChild(el('div',{class:'card'}, el('div',{class:'card-body'},
+    el('h3',{style:'margin-bottom:10px;'},'Détail des recettes'),
+    financeRow('Ventes encaissées', recetteVentes),
+    financeRow('Paiements de dettes clients', recettePaiements),
+    financeRow('Autres recettes', recetteManuelle),
+    el('h3',{style:'margin:16px 0 10px;'},'Détail des dépenses'),
+    financeRow('Dépenses courantes', depenseCourantes, true),
+    financeRow('Achats fournisseurs', depenseAchats, true),
+    financeRow('Autres dépenses', depenseManuelle, true),
+  )));
+
+  const movements = [
+    ...salesInRange.map(s=>({date:s.date, type:'recette', libelle:`Vente ${s.numero||''}`, montant:s.amountPaid})),
+    ...paymentsInRange.map(p=>({date:p.date, type:'recette', libelle:'Paiement dette client', montant:p.montant})),
+    ...manualRecettes.map(m=>({date:m.date, type:'recette', libelle:m.description||'Recette manuelle', montant:m.montant})),
+    ...expensesInRange.map(x=>({date:x.date, type:'depense', libelle:x.libelle, montant:x.montant})),
+    ...purchasesInRange.map(p=>({date:p.date||p.dateCreation, type:'depense', libelle:`Achat ${p.numero||''} — ${p.fournisseurNom||''}`, montant:p.totalTTC||p.total||0})),
+    ...manualDepenses.map(m=>({date:m.date, type:'depense', libelle:m.description||'Dépense manuelle', montant:m.montant})),
+  ].sort((a,b)=> toDateSafe(b.date)-toDateSafe(a.date)).slice(0,100);
+
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Type'), el('th',{},'Libellé'), el('th',{},'Montant'))),
+    el('tbody',{}, ...(movements.length? movements.map(m=> el('tr',{},
+      el('td',{}, fmtDate(m.date,true)),
+      el('td',{}, el('span',{class:`badge ${m.type==='recette'?'badge-success':'badge-danger'}`}, m.type==='recette'?'Recette':'Dépense')),
+      el('td',{}, m.libelle||'—'),
+      el('td',{style:`font-weight:700; color:${m.type==='recette'?'var(--success)':'var(--danger)'};`}, (m.type==='recette'?'+':'-')+money(m.montant))
+    )) : [el('tr',{}, el('td',{colspan:'4',class:'empty-state'},'Aucun mouvement sur cette période'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function financeRow(label, amount, isExpense){
+  return el('div',{style:'display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--border);'},
+    el('span',{class:'text-dim'}, label),
+    el('span',{style:`font-weight:700; color:${isExpense?'var(--danger)':'var(--success)'};`}, (isExpense?'-':'+')+money(amount))
+  );
+}
+function openFinanceMovementForm(){
+  const body = el('div',{},
+    el('div',{class:'form-row'}, el('label',{},'Type'),
+      el('select',{class:'input', id:'fm-type'}, el('option',{value:'recette'},'Recette (entrée d\'argent)'), el('option',{value:'depense'},'Dépense (sortie d\'argent)'))),
+    el('div',{class:'form-row'}, el('label',{},'Description *'), el('input',{class:'input', id:'fm-desc'})),
+    el('div',{class:'form-row'}, el('label',{},'Montant (FCFA) *'), el('input',{class:'input', id:'fm-montant', type:'number'})),
+    el('p',{class:'text-faint', style:'font-size:12px;'},"Utilisez ce formulaire pour les mouvements hors caisse/dépenses classiques : apport de capital, virement bancaire, remboursement, etc.")
+  );
+  openModal({ title:'Nouveau mouvement financier', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const type = $('#fm-type').value, description = $('#fm-desc').value.trim(), montant = toInt($('#fm-montant').value);
+      if(!description || montant<=0){ toast('Description et montant valides requis.','warning'); return; }
+      try{
+        const id = await fsAdd('financeMovements', { type, description, montant, boutiqueId:currentStoreId(), userId:STATE.user.uid, date:serverTimestamp() });
+        await logAudit('creation','finance', id, `Mouvement financier — ${type} — ${money(montant)}`);
+        toast('Mouvement enregistré.','success');
+        closeModal(); navigateTo('finance');
+      }catch(e){ toast(friendlyError(e),'error'); }
+    }}, 'Enregistrer')
+  ]});
+}
+
+/* ==========================================================================
+   JOURNAL D'ACTIVITÉ
+   ========================================================================== */
+async function renderAudit(root){
+  root.innerHTML = '';
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},"Journal d'activité"))));
+  const logs = await fsGetAll('auditLogs', ...storeScoped(orderBy('date','desc'), limit(200)));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const tbody = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Utilisateur'), el('th',{},'Action'), el('th',{},'Module'), el('th',{},'Détails'))),
+    el('tbody',{}, ...(logs.length? logs.map(l=> el('tr',{},
+      el('td',{}, fmtDate(l.date,true)),
+      el('td',{}, l.userName||'—'),
+      el('td',{}, el('span',{class:'badge badge-neutral'}, l.action)),
+      el('td',{}, l.module||'—'),
+      el('td',{class:'text-dim'}, l.description||'—')
+    )) : [el('tr',{}, el('td',{colspan:'5',class:'empty-state'},"Aucune entrée dans le journal"))]))
+  );
+  card.querySelector('.table-wrap').appendChild(tbody);
+  root.appendChild(card);
+}
+
+/* ==========================================================================
+   PARAMÈTRES (boutique courante, minimal pour la Phase 1)
+   ========================================================================== */
+/* ==========================================================================
+   UTILISATEURS & RÔLES (Super Administrateur uniquement)
+   ========================================================================== */
+async function renderUsers(root){
+  root.innerHTML='';
+  if(!canManageUsers()){
+    root.innerHTML = `<div class="empty-state"><div class="ic">🔒</div><div class="t">Accès réservé</div><div>Seul le Super Administrateur peut gérer les utilisateurs et les rôles.</div></div>`;
+    return;
+  }
+  let users = [];
+  try{ users = await fsGetAll('users'); }catch(e){ toast(friendlyError(e),'error'); }
+  let stores = STATE.stores;
+  try{ stores = await fsGetAll('stores'); STATE.stores = stores; }catch(e){}
+
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Utilisateurs'), el('div',{class:'sub'}, `${users.length} compte(s) — 3 niveaux : Super Administrateur, Gérant, Caissier`)),
+    el('button',{class:'btn btn-primary', onclick: ()=> openUserFormModal(null, stores)}, '+ Nouvel utilisateur')
+  ));
+
+  const card = el('div',{class:'card'});
+  const wrap = el('div',{class:'table-wrap'});
+  const tbody = el('tbody',{});
+  const table = el('table',{},
+    el('thead',{}, el('tr',{},
+      el('th',{},''), el('th',{},'Nom'), el('th',{},'Email'), el('th',{},'Rôle'),
+      el('th',{},'Boutique'), el('th',{},'Statut'), el('th',{},'Actions')
+    )),
+    tbody
+  );
+  if(!users.length){
+    tbody.appendChild(el('tr',{}, el('td',{colspan:'7'}, el('div',{class:'empty-state'}, el('div',{class:'ic'},'🧑‍🤝‍🧑'), el('div',{class:'t'},'Aucun utilisateur')))));
+  } else {
+    users.sort((a,b)=> (a.prenom||a.email||'').localeCompare(b.prenom||b.email||''));
+    users.forEach(u=>{
+      const tier = roleTier(u.role);
+      const storeName = stores.find(s=>s.id===u.boutiqueId)?.nom || (tier==='super_admin' ? 'Toutes' : '—');
+      const isSelf = u.id === STATE.user?.uid;
+      tbody.appendChild(el('tr',{},
+        el('td',{}, u.photo ? el('img',{src:u.photo, style:'width:32px;height:32px;border-radius:50%;object-fit:cover;'}) : el('div',{class:'avatar', style:'width:32px;height:32px;font-size:12px;'}, (u.prenom?.[0]||u.email?.[0]||'?').toUpperCase())),
+        el('td',{}, el('div',{style:'font-weight:600;'}, `${u.prenom||''} ${u.nom||''}`.trim()||'—'), isSelf? el('div',{class:'text-faint', style:'font-size:11px;'},'(vous)') : ''),
+        el('td',{}, u.email||'—'),
+        el('td',{}, el('span',{class:`badge ${TIER_BADGE[tier]||'badge-neutral'}`}, ROLE_LABELS[u.role]||u.role||'—')),
+        el('td',{}, storeName),
+        el('td',{}, u.actif===false ? el('span',{class:'badge badge-danger'},'Désactivé') : el('span',{class:'badge badge-success'},'Actif')),
+        el('td',{}, el('div',{style:'display:flex; gap:6px; flex-wrap:wrap;'},
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=> openUserFormModal(u, stores)}, 'Modifier'),
+          el('button',{class:'btn btn-outline btn-sm', onclick: async ()=>{
+            if(!u.email){ toast("Cet utilisateur n'a pas d'email.",'warning'); return; }
+            try{ await sendPasswordResetEmail(auth, u.email); toast('Email de réinitialisation envoyé.','success'); }
+            catch(e){ toast(friendlyError(e),'error'); }
+          }}, 'Réinit. mot de passe'),
+          isSelf ? '' : el('button',{class:`btn btn-sm ${u.actif===false?'btn-primary':'btn-danger'}`, onclick: async ()=>{
+            const ok = await confirmDialog(u.actif===false ? `Réactiver ${u.email} ?` : `Désactiver ${u.email} ? Il ne pourra plus se connecter.`, {title:'Confirmation', danger:u.actif!==false});
+            if(!ok) return;
+            try{
+              await fsUpdate('users', u.id, { actif: u.actif===false });
+              await logAudit(u.actif===false?'activation':'desactivation','users', u.id, `Compte ${u.email} ${u.actif===false?'réactivé':'désactivé'}`);
+              toast('Statut mis à jour.','success');
+              navigateTo('users');
+            }catch(e){ toast(friendlyError(e),'error'); }
+          }}, u.actif===false?'Activer':'Désactiver')
+        ))
+      ));
+    });
+  }
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  root.appendChild(card);
+}
+
+function openUserFormModal(user, stores){
+  const isEdit = !!user;
+  let selectedFile = null;
+  const previewId = 'uf-photo-preview';
+  const body = el('div',{},
+    el('div',{style:'display:flex; align-items:center; gap:14px; margin-bottom:16px;'},
+      el('div',{id:previewId, class:'avatar', style:'width:56px;height:56px;font-size:20px;'},
+        user?.photo ? el('img',{src:user.photo, style:'width:100%;height:100%;border-radius:50%;object-fit:cover;'}) : (user?.prenom?.[0]||user?.email?.[0]||'+').toUpperCase()
+      ),
+      el('div',{},
+        el('label',{class:'btn btn-outline btn-sm', style:'cursor:pointer;'}, '📷 Choisir une photo',
+          el('input',{type:'file', accept:'image/*', style:'display:none;', onchange:(e)=>{
+            selectedFile = e.target.files[0] || null;
+            if(selectedFile){
+              const url = URL.createObjectURL(selectedFile);
+              $('#'+previewId).innerHTML = `<img src="${url}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+            }
+          }})
+        )
+      )
+    ),
+    el('div',{class:'form-grid'},
+      frow('Prénom','uf-prenom', user?.prenom),
+      frow('Nom','uf-nom', user?.nom),
+      frow('Email','uf-email', user?.email, isEdit ? {disabled:'disabled'} : {}),
+      frow('Téléphone','uf-tel', user?.telephone),
+    ),
+    !isEdit ? el('div',{class:'form-row'}, el('label',{},'Mot de passe (min. 6 caractères)'), el('input',{class:'input', id:'uf-pass', type:'password', autocomplete:'new-password'})) : '',
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Rôle'),
+        el('select',{class:'input', id:'uf-role'}, ...OFFICIAL_ROLES.map(r=> el('option',{value:r, selected: (user? roleTier(user.role):'caissier')===r ? 'selected':null}, TIER_LABELS[r])))
+      ),
+      el('div',{class:'form-row'}, el('label',{},'Boutique'),
+        el('select',{class:'input', id:'uf-store'},
+          el('option',{value:''},'— Aucune / Toutes (Super Admin) —'),
+          ...stores.map(s=> el('option',{value:s.id, selected: user?.boutiqueId===s.id?'selected':null}, s.nom))
+        )
+      )
+    )
+  );
+  function frow(label,id,v,extra={}){ return el('div',{class:'form-row'}, el('label',{},label), el('input',{class:'input', id, value:v||'', ...extra})); }
+
+  openModal({
+    title: isEdit? `Modifier ${user.email||''}` : 'Nouvel utilisateur',
+    body,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async (e)=>{
+        const btn = e.currentTarget; btn.disabled = true;
+        try{
+          const nom = $('#uf-nom').value.trim(), prenom = $('#uf-prenom').value.trim();
+          const telephone = $('#uf-tel').value.trim(), role = $('#uf-role').value;
+          const boutiqueId = $('#uf-store').value || null;
+          let targetId;
+          if(isEdit){
+            await fsUpdate('users', user.id, { nom, prenom, telephone, role, boutiqueId });
+            targetId = user.id;
+            await logAudit('modification','users', user.id, `Utilisateur ${user.email} modifié (rôle: ${TIER_LABELS[roleTier(role)]})`);
+            if(user.id === STATE.user?.uid){ STATE.profile = { ...STATE.profile, nom, prenom, telephone, role, boutiqueId }; showApp(); }
+          } else {
+            const email = $('#uf-email').value.trim();
+            const pass = $('#uf-pass').value;
+            if(!email || !pass || pass.length<6){ toast('Email valide et mot de passe (6 car. min) requis.','warning'); btn.disabled=false; return; }
+            targetId = await createUserAsAdmin({ email, password:pass, nom, prenom, telephone, role, boutiqueId });
+            await logAudit('creation','users', targetId, `Utilisateur ${email} créé (rôle: ${TIER_LABELS[roleTier(role)]})`);
+          }
+          if(selectedFile){
+            try{
+              if(isEdit && user.photoPath) await deleteR2File(user.photoPath).catch(()=>{});
+              const up = await uploadToR2(selectedFile, `users/${targetId}/profile`);
+              await fsUpdate('users', targetId, { photo: up.url, photoPath: up.path });
+              if(targetId === STATE.user?.uid){ STATE.profile.photo = up.url; showApp(); }
+            }catch(err){ toast("Utilisateur enregistré, mais l'envoi de la photo a échoué : "+friendlyError(err), 'warning'); }
+          }
+          toast(isEdit?'Utilisateur mis à jour.':'Utilisateur créé.','success');
+          closeModal();
+          navigateTo('users');
+        }catch(err){ toast(friendlyError(err),'error'); btn.disabled=false; }
+      }}, isEdit?'Enregistrer':'Créer le compte')
+    ]
+  });
+}
+
+/* ==========================================================================
+   MON PROFIL (tous rôles — photo, coordonnées, mot de passe)
+   ========================================================================== */
+function openMyProfileModal(){
+  const p = STATE.profile; if(!p) return;
+  let selectedFile = null;
+  const previewId = 'mp-photo-preview';
+  const body = el('div',{},
+    el('div',{style:'display:flex; align-items:center; gap:14px; margin-bottom:18px;'},
+      el('div',{id:previewId, class:'avatar', style:'width:64px;height:64px;font-size:22px;'},
+        p.photo ? el('img',{src:p.photo, style:'width:100%;height:100%;border-radius:50%;object-fit:cover;'}) : (p.prenom?.[0]||p.email?.[0]||'?').toUpperCase()
+      ),
+      el('div',{},
+        el('div',{style:'font-weight:700; margin-bottom:6px;'}, `${p.prenom||''} ${p.nom||''}`.trim()||p.email),
+        el('div',{class:'text-faint', style:'font-size:12px; margin-bottom:8px;'}, ROLE_LABELS[p.role]||p.role),
+        el('label',{class:'btn btn-outline btn-sm', style:'cursor:pointer;'}, '📷 Changer la photo',
+          el('input',{type:'file', accept:'image/*', style:'display:none;', onchange:(e)=>{
+            selectedFile = e.target.files[0] || null;
+            if(selectedFile){
+              const url = URL.createObjectURL(selectedFile);
+              $('#'+previewId).innerHTML = `<img src="${url}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+            }
+          }})
+        )
+      )
+    ),
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Prénom'), el('input',{class:'input', id:'mp-prenom', value:p.prenom||''})),
+      el('div',{class:'form-row'}, el('label',{},'Nom'), el('input',{class:'input', id:'mp-nom', value:p.nom||''})),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Téléphone'), el('input',{class:'input', id:'mp-tel', value:p.telephone||''})),
+    el('div',{class:'form-row'}, el('label',{},'Email'), el('input',{class:'input', value:p.email||'', disabled:'disabled'})),
+    el('button',{class:'btn btn-outline btn-sm', style:'margin-top:4px;', onclick: async ()=>{
+      try{ await sendPasswordResetEmail(auth, p.email); toast('Email de réinitialisation envoyé.','success'); }
+      catch(e){ toast(friendlyError(e),'error'); }
+    }}, '🔑 Changer mon mot de passe (par email)')
+  );
+  openModal({
+    title:'Mon profil',
+    body,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Fermer'),
+      el('button',{class:'btn btn-primary', onclick: async (e)=>{
+        const btn = e.currentTarget; btn.disabled = true;
+        try{
+          const nom = $('#mp-nom').value.trim(), prenom = $('#mp-prenom').value.trim(), telephone = $('#mp-tel').value.trim();
+          await fsUpdate('users', p.id, { nom, prenom, telephone });
+          STATE.profile = { ...STATE.profile, nom, prenom, telephone };
+          if(selectedFile){
+            if(p.photoPath) await deleteR2File(p.photoPath).catch(()=>{});
+            const up = await uploadToR2(selectedFile, `users/${p.id}/profile`);
+            await fsUpdate('users', p.id, { photo: up.url, photoPath: up.path });
+            STATE.profile.photo = up.url; STATE.profile.photoPath = up.path;
+          }
+          await logAudit('modification','users', p.id, 'Profil personnel mis à jour');
+          toast('Profil mis à jour.','success');
+          closeModal();
+          showApp();
+        }catch(err){ toast(friendlyError(err),'error'); btn.disabled=false; }
+      }}, 'Enregistrer')
+    ]
+  });
+}
+$('#user-chip').addEventListener('click', openMyProfileModal);
+
+async function renderSettings(root){
+  root.innerHTML='';
+  const s = STATE.store || {};
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Paramètres de la boutique'))));
+  const body = el('div',{class:'card'}, el('div',{class:'card-body'},
+    el('div',{class:'form-grid'},
+      row('Nom de la boutique','st-nom', s.nom), row('Téléphone','st-tel', s.telephone),
+      row('Adresse','st-addr', s.adresse), row('Email','st-email', s.email),
+    ),
+    el('button',{class:'btn btn-primary', style:'margin-top:10px;', onclick: async ()=>{
+      const data = { nom:$('#st-nom').value.trim(), telephone:$('#st-tel').value.trim(), adresse:$('#st-addr').value.trim(), email:$('#st-email').value.trim(), actif:true };
+      try{
+        if(STATE.store?.id){ await fsUpdate('stores', STATE.store.id, data); STATE.store = {...STATE.store, ...data}; }
+        else { const id = await fsAdd('stores', data); STATE.store = {id, ...data}; await fsUpdate('users', STATE.user.uid, { boutiqueId:id }); STATE.profile.boutiqueId = id; }
+        $('#store-pill-text').textContent = STATE.store.nom;
+        await logAudit('modification','settings', STATE.store.id, 'Paramètres boutique mis à jour');
+        toast('Paramètres enregistrés.','success');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, 'Enregistrer')
+  ));
+  function row(label,id,v){ return el('div',{class:'form-row'}, el('label',{},label), el('input',{class:'input', id, value:v||''})); }
+  root.appendChild(body);
+}
+
+/* ==========================================================================
+   TABLE DES SECTIONS
+   ========================================================================== */
+const SECTION_RENDERERS = {
+  dashboard: renderDashboard,
+  pos: renderPOS,
+  sales: renderSales,
+  products: renderProducts,
+  stock: renderStock,
+  inventory: renderInventory,
+  customers: renderCustomers,
+  cashregister: renderCashRegister,
+  finance: renderFinance,
+  expenses: renderExpenses,
+  audit: renderAudit,
+  users: renderUsers,
+  settings: renderSettings
+};
+
+/* ==========================================================================
+   RECHERCHE GLOBALE (produits + clients, phase 1)
+   ========================================================================== */
+$('#global-search').addEventListener('input', debounce(async (e)=>{
+  const term = e.target.value.trim().toLowerCase();
+  if(term.length<2) return;
+  const prodMatches = STATE.products.filter(p=>[p.nom,p.sku,p.reference].some(v=>(v||'').toLowerCase().includes(term))).slice(0,5);
+  const custMatches = STATE.customers.filter(c=>[c.nom,c.prenom,c.telephone].some(v=>(v||'').toLowerCase().includes(term))).slice(0,5);
+  if(!prodMatches.length && !custMatches.length) return;
+  openModal({
+    title:`Résultats pour "${e.target.value}"`,
+    body: el('div',{},
+      prodMatches.length? el('div',{}, el('div',{class:'nav-group-label', style:'padding-left:0;'},'Produits'), ...prodMatches.map(p=>el('div',{class:'tag-search-result', onclick:()=>{closeModal(); navigateTo('products');}}, p.nom, el('span',{class:'text-faint'}, money(p.prixVente))))) : '',
+      custMatches.length? el('div',{}, el('div',{class:'nav-group-label', style:'padding-left:0;'},'Clients'), ...custMatches.map(c=>el('div',{class:'tag-search-result', onclick:()=>{closeModal(); navigateTo('customers');}}, `${c.prenom||''} ${c.nom||''}`, el('span',{class:'text-faint'}, c.telephone)))) : ''
+    )
+  });
+},350));
+
+/* ==========================================================================
+   INITIALISATION
+   ========================================================================== */
+window.addEventListener('DOMContentLoaded', ()=>{ applyTheme(); });
+
+</script>
+
+<!-- ============================================================================
+DOCUMENTATION DE DÉPLOIEMENT — BRAINY STORE
+============================================================================
+
+1) FIREBASE — Installation
+   - Utiliser le projet Firebase existant "suivre-coli" (config déjà intégrée).
+   - Console : https://console.firebase.google.com/project/suivre-coli
+
+2) ACTIVER AUTHENTICATION
+   - Firebase Console → Authentication → Sign-in method → activer "Email/Password".
+   - Créer manuellement le premier compte super_admin (Authentication → Users → Add user),
+     puis, dans Firestore, éditer son document users/{uid} pour fixer role="super_admin".
+
+3) CRÉER FIRESTORE
+   - Firebase Console → Firestore Database → Créer une base (mode production).
+   - Les collections se créent automatiquement à la première écriture de l'application
+     (users, stores, products, sales, stockMovements, customers, customerPayments,
+      cashRegisters, cashMovements, auditLogs, counters, etc.).
+
+4) RÈGLES FIRESTORE (exemple à adapter et coller dans Firestore → Règles) :
+
+   ⚠️ IMPORTANT (correctif) : la règle /products/{id} ci-dessous a été corrigée pour
+   autoriser un Caissier à décrémenter le champ "stock" lors d'un encaissement POS
+   (auparavant réservé à Gérant/Super Admin, ce qui bloquait silencieusement le
+   bouton "Encaisser" pour les comptes Caissier). Si des règles sont déjà déployées
+   dans la Console Firebase, il faut RECOLLER ce bloc mis à jour et le publier pour
+   que la correction prenne effet en production.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function myProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function myRole() { return myProfile().role; }
+    function myStore() { return myProfile().boutiqueId; }
+    // Palier réel du rôle : identique à roleTier() côté client (LEGACY_ROLE_TIER),
+    // afin que les anciens comptes (admin/vendeur/magasinier/comptable) restent
+    // fonctionnels sans avoir besoin d'être réécrits en base.
+    function myTier() {
+      return myRole() == 'super_admin' ? 'super_admin'
+           : myRole() in ['gerant','admin','comptable','magasinier'] ? 'gerant'
+           : 'caissier'; // caissier, vendeur, ou tout rôle inconnu -> palier le plus bas par défaut
+    }
+    function isSuperAdmin() { return isSignedIn() && myTier() == 'super_admin'; }
+    function isGerantOrAbove() { return isSignedIn() && (myTier() == 'super_admin' || myTier() == 'gerant'); }
+    function sameStore(storeId) { return isSignedIn() && (isSuperAdmin() || myStore() == storeId); }
+
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isGerantOrAbove());
+      // Un utilisateur peut modifier ses propres infos (nom, téléphone, photo) mais
+      // JAMAIS son propre rôle ou sa boutique — seul le Super Admin le peut (allow write ci-dessous).
+      allow update: if isSignedIn() && request.auth.uid == uid
+                    && request.resource.data.role == resource.data.role
+                    && request.resource.data.boutiqueId == resource.data.boutiqueId
+                    && request.resource.data.actif == resource.data.actif;
+      allow create, delete: if isSuperAdmin();
+      allow write: if isSuperAdmin(); // gestion des comptes/rôles/statut : Super Admin exclusivement
+    }
+
+    match /stores/{storeId} {
+      allow read: if sameStore(storeId);
+      allow write: if isSuperAdmin();
+    }
+
+    match /products/{id} {
+      allow read: if isSignedIn() && sameStore(resource.data.boutiqueId);
+      allow create: if isSignedIn() && sameStore(resource.data.boutiqueId) && isGerantOrAbove();
+      // IMPORTANT : un Caissier doit pouvoir décrémenter le stock au moment d'une vente
+      // POS (bouton "Encaisser"), sinon l'écriture est bloquée par les règles et
+      // l'encaissement échoue silencieusement côté client. On l'autorise donc, mais en
+      // restreignant strictement les champs qu'il peut modifier à stock/dateModification
+      // (jamais le prix, le nom, etc., qui restent réservés à Gérant/Super Admin).
+      allow update: if isSignedIn() && sameStore(resource.data.boutiqueId) && (
+                      isGerantOrAbove() ||
+                      (myTier() == 'caissier' &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock','dateModification']))
+                    );
+      allow delete: if isGerantOrAbove();
+    }
+
+    match /stockMovements/{id} {
+      allow read: if sameStore(resource.data.boutiqueId);
+      // Le Caissier ne crée pas de mouvement de stock manuel : seule une vente (via /sales)
+      // en déclenche un, en toute rigueur créée par un rôle Gérant+ ou par la logique de vente.
+      allow create: if isSignedIn() && (isGerantOrAbove() || myTier() == 'caissier');
+      allow update, delete: if false; // les mouvements de stock sont immuables
+    }
+
+    match /purchases/{id} { allow read: if sameStore(resource.data.boutiqueId); allow write: if isGerantOrAbove(); }
+    match /suppliers/{id} { allow read: if sameStore(resource.data.boutiqueId); allow write: if isGerantOrAbove(); }
+    match /transfers/{id} { allow read, write: if isGerantOrAbove(); }
+    match /expenses/{id} { allow read, write: if isGerantOrAbove(); }
+    match /financeMovements/{id} { allow read, write: if isGerantOrAbove(); }
+    match /promotions/{id} { allow read: if isSignedIn(); allow write: if isGerantOrAbove(); }
+    match /loyaltyAccounts/{id} { allow read: if isSignedIn(); allow write: if isSignedIn(); }
+    match /orders/{id} { allow read: if isSignedIn(); allow write: if isSignedIn(); }
+    match /employees/{id} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn(); // Gérant+ et Caissier peuvent tous deux gérer les employés (cf. cahier des charges)
+    }
+    match /sellers/{id} { allow read, write: if isSignedIn(); }
+    match /marketMissions/{id} { allow read, write: if isSignedIn(); }
+
+    match /sales/{id} {
+      allow read: if sameStore(resource.data.boutiqueId);
+      allow create: if isSignedIn();
+      allow update: if isGerantOrAbove(); // annulation réservée aux Gérant/Super Admin
+      allow delete: if false;
+    }
+
+    match /customers/{id} {
+      allow read, create: if isSignedIn() && sameStore(resource.data.boutiqueId);
+      allow update: if isSignedIn() && sameStore(resource.data.boutiqueId);
+      allow delete: if isGerantOrAbove();
+    }
+
+    match /cashRegisters/{id} {
+      allow read: if sameStore(resource.data.boutiqueId);
+      allow create, update: if isSignedIn();
+    }
+    match /cashMovements/{id} {
+      allow read: if sameStore(resource.data.boutiqueId);
+      allow create: if isSignedIn();
+    }
+
+    match /auditLogs/{id} {
+      allow read: if isGerantOrAbove();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /counters/{id} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Règle générique de repli pour toute collection non listée explicitement ci-dessus :
+    match /{document=**} {
+      allow read, write: if isGerantOrAbove();
+    }
+  }
+}
+
+   Points clés :
+   - Un vendeur ne peut pas modifier son propre rôle/boutique (règle users.update).
+   - prixAchat n'est modifiable que par les rôles habilités côté règles ET côté UI
+     (fonction canEditCostPrice()) — la vérité reste néanmoins côté serveur.
+   - Les mouvements de stock et les ventes ne sont jamais supprimables (immuabilité).
+
+5) CLOUDFLARE R2 — Configuration du bucket
+   - Cloudflare Dashboard → R2 → Créer le bucket "MY_BUCKET" (ou renommer en conséquence
+     dans le Worker ci-dessous).
+   - Activer l'accès public si nécessaire, ou servir via le Worker (recommandé).
+
+6) CONFIGURATION DU WORKER (à déployer séparément, PAS dans ce HTML)
+   Exemple de Worker complet gérant PUT / GET / DELETE / HEAD :
+
+   export default {
+     async fetch(request, env) {
+       const url = new URL(request.url);
+       const key = decodeURIComponent(url.pathname.slice(1));
+       const corsHeaders = {
+         "Access-Control-Allow-Origin": "*",
+         "Access-Control-Allow-Methods": "GET,PUT,DELETE,HEAD,OPTIONS",
+         "Access-Control-Allow-Headers": "Content-Type"
+       };
+       if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+       if (!key) return new Response("Clé manquante", { status: 400, headers: corsHeaders });
+
+       switch (request.method) {
+         case "PUT": {
+           await env.MY_BUCKET.put(key, request.body, {
+             httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" }
+           });
+           return new Response(JSON.stringify({ ok: true, key }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+         }
+         case "GET": {
+           const obj = await env.MY_BUCKET.get(key);
+           if (!obj) return new Response("Introuvable", { status: 404, headers: corsHeaders });
+           const headers = new Headers(corsHeaders);
+           obj.writeHttpMetadata(headers);
+           headers.set("etag", obj.httpEtag);
+           return new Response(obj.body, { headers });
+         }
+         case "HEAD": {
+           const obj = await env.MY_BUCKET.head(key);
+           if (!obj) return new Response(null, { status: 404, headers: corsHeaders });
+           return new Response(null, { headers: corsHeaders });
+         }
+         case "DELETE": {
+           await env.MY_BUCKET.delete(key);
+           return new Response(JSON.stringify({ ok: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+         }
+         default:
+           return new Response(`${request.method} non autorisé.`, { status: 405, headers: { ...corsHeaders, Allow: "GET,PUT,DELETE,HEAD" } });
+       }
+     }
+   };
+
+   - Ne JAMAIS placer de token/API secret R2 dans ce fichier HTML : le binding
+     env.MY_BUCKET est configuré uniquement côté Cloudflare (wrangler.toml / dashboard).
+   - Restreindre si besoin le Worker par CORS (Access-Control-Allow-Origin) au domaine
+     exact d'hébergement de brainy-store.html en production.
+
+7) DÉPLOIEMENT GITHUB PAGES
+   - Créer un dépôt, y placer brainy-store.html (éventuellement renommé index.html).
+   - Settings → Pages → Source: branche principale → dossier racine.
+   - L'URL publique sera du type https://votre-compte.github.io/votre-repo/.
+
+8) DÉPLOIEMENT CLOUDFLARE PAGES
+   - Cloudflare Dashboard → Workers & Pages → Create → Pages → Upload assets.
+   - Déposer brainy-store.html (renommé index.html) puis déployer.
+
+9) LIMITATION PWA (transparence)
+   - Ce livrable respecte la contrainte "un seul fichier HTML" : il n'inclut donc PAS
+     de manifest.json ni de service-worker.js externes (un manifeste PWA installable et
+     un Service Worker performant nécessitent des fichiers séparés servis à des URLs
+     dédiées). L'application reste pleinement utilisable dans un navigateur mobile et
+     peut être ajoutée à l'écran d'accueil via le menu du navigateur, mais ne propose
+     pas d'installation PWA complète ni de cache hors-ligne avancé tant que ces fichiers
+     ne sont pas ajoutés séparément à l'hébergement.
+
+10) PÉRIMÈTRE DE CETTE VERSION (Phase 1)
+    Implémenté et pleinement fonctionnel : authentification + rôles/permissions,
+    multi-boutique (base), tableau de bord avec calculs réels, produits (CRUD + photo R2),
+    stock (mouvements + transactions Firestore), POS/ventes (panier, remises, paiement
+    multiple, crédit, reçu imprimable + partage WhatsApp), clients et dettes, caisse
+    (ouverture/mouvements/clôture avec écart), notifications toast, journal d'audit,
+    recherche globale de base, mode sombre, numérotation séquentielle atomique.
+
+    Prévu dans les phases suivantes (mêmes règles : pas de fausses fonctionnalités) :
+    achats/fournisseurs, inventaire physique, dépenses détaillées par catégorie,
+    employés/vendeurs avancés, missions marché, commandes clients, transferts
+    inter-boutiques, promotions, fidélité, rapports/exports avancés, scanner
+    code-barres caméra, étiquettes imprimables, mode hors-ligne IndexedDB.
+============================================================================ -->
+</html>
