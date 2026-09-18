@@ -328,6 +328,7 @@ tbody tr:hover{background:var(--surface-2);}
 .prod-card{
   background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px; cursor:pointer;
   transition:transform .08s, border-color .12s; text-align:left; display:flex; flex-direction:column;
+  width:100%;
 }
 .prod-card:hover{border-color:var(--primary); transform:translateY(-2px);}
 .prod-card:active{transform:scale(.97);}
@@ -340,6 +341,14 @@ tbody tr:hover{background:var(--surface-2);}
 .prod-card .p-price{font-size:12.5px; color:var(--primary); font-weight:800;}
 .prod-card .p-stock{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
 .prod-card.disabled{opacity:.4; pointer-events:none;}
+.prod-card .p-best-badge{font-size:10px; font-weight:700; color:var(--accent); margin-top:3px;}
+.prod-card-wrap{position:relative;}
+.fav-star{
+  position:absolute; top:6px; right:6px; z-index:2; width:24px; height:24px; border-radius:50%;
+  border:1px solid var(--border); background:var(--surface); color:var(--text-faint); font-size:13px;
+  display:flex; align-items:center; justify-content:center; padding:0; line-height:1; box-shadow:var(--shadow);
+}
+.fav-star.active{color:var(--accent); border-color:var(--accent);}
 
 .pos-right{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0;}
 .cart-head{padding:14px 16px; border-bottom:1px solid var(--border); font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center;}
@@ -541,7 +550,13 @@ const STATE = {
   online: navigator.onLine,
   theme: localStorage.getItem('bs_theme') || 'light',
   notifications: [],
-  unsubList: []
+  unsubList: [],
+  customPermissions: null,   // permissions par niveau configurées par le Super Admin (settings/permissions), null = valeurs par défaut (TIER_PERMISSIONS)
+  salesCountByProduct: {},   // cache: productId -> quantité vendue récente (pour tri "meilleures ventes" au POS)
+  bestSellersLoadedAt: 0,
+  promotionsCache: [],       // cache: promotions actives de la boutique (utilisées par le POS)
+  _promoCacheAt: 0,
+  loyaltyConfig: null        // cache: règles du programme de fidélité (settings/loyalty)
 };
 
 /* ============================== UTILITAIRES ============================== */
@@ -636,9 +651,35 @@ const TIER_PERMISSIONS = {
            'loyalty','transfers','reports'],
   caissier: ['dashboard','pos','sales','cashregister','customers','employees','sellers','missions']
 };
+// Clés de sections qui ne sont JAMAIS configurables via le module "Permissions par niveau" :
+// leur accès reste géré par une règle métier dédiée, indépendamment du tier.
+const PERMISSION_LOCKED_KEYS = ['users'];
+
+/* ============================== PERMISSIONS PERSONNALISÉES (Super Admin) ==============================
+   Par défaut, chaque niveau (tier) utilise TIER_PERMISSIONS ci-dessus. Le Super Administrateur peut,
+   depuis l'onglet Utilisateurs, redéfinir précisément les onglets accessibles à chaque niveau
+   (Gérant, Caissier). Cette configuration est stockée dans le document Firestore settings/permissions
+   sous la forme { tiers: { gerant:[...clés...], caissier:[...clés...] } } et chargée au démarrage de
+   session dans STATE.customPermissions. Tant qu'aucune configuration n'a été enregistrée, ou pour un
+   tier non présent dans la configuration, le comportement par défaut (TIER_PERMISSIONS) s'applique :
+   donc rien ne change pour les installations existantes tant que le Super Admin n'a rien configuré. */
+async function loadPermissionsConfig(){
+  try{
+    const cfg = await fsGet('settings','permissions');
+    STATE.customPermissions = (cfg && cfg.tiers) ? cfg.tiers : null;
+  }catch(e){ STATE.customPermissions = null; }
+}
+function effectivePermissions(tier){
+  if(tier==='super_admin') return ['*'];
+  const custom = STATE.customPermissions && Array.isArray(STATE.customPermissions[tier]) ? STATE.customPermissions[tier] : null;
+  return custom || TIER_PERMISSIONS[tier] || [];
+}
 function can(sectionKey){
   if(!STATE.profile) return false;
-  const perms = TIER_PERMISSIONS[myTier()] || [];
+  // La gestion des comptes/rôles reste toujours strictement réservée au Super Administrateur,
+  // quelle que soit la configuration de permissions enregistrée.
+  if(PERMISSION_LOCKED_KEYS.includes(sectionKey)) return isSuperAdmin();
+  const perms = effectivePermissions(myTier());
   return perms.includes('*') || perms.includes(sectionKey);
 }
 // Permissions fines sur des opérations sensibles — vérifiées dans la logique métier
@@ -708,6 +749,43 @@ async function fsUpdate(colName, id, data){
 }
 async function fsDelete(colName, id){
   await deleteDoc(doc(db, colName, id));
+}
+/* ============================== LECTURE TRIÉE SANS INDEX COMPOSITE ==============================
+   Plusieurs onglets chargent une collection filtrée par boutique (where boutiqueId==...)
+   ET triée par date (orderBy). Cette combinaison "where sur un champ + orderBy sur un
+   autre champ" nécessite normalement un INDEX COMPOSITE Firestore (d'où l'erreur
+   "The query requires an index"). Plutôt que d'exiger la création manuelle de cet index
+   pour que l'application fonctionne (ce qui casserait le chargement tant que l'index
+   n'est pas construit, une opération qui peut prendre plusieurs minutes après un premier
+   déploiement), cette fonction tente d'abord la requête triée côté serveur, PUIS, si
+   Firestore répond par une erreur d'index manquant (ou toute autre erreur), se replie
+   automatiquement sur une requête filtrée seule (sans orderBy, donc sans index composite
+   requis) suivie d'un tri strictement équivalent effectué côté client. Le résultat final
+   est donc identique dans les deux cas, sans jamais afficher d'erreur de chargement.
+   Voir aussi firestore.indexes.json (fourni séparément) pour déployer les index et
+   bénéficier du tri 100% serveur + pagination si le projet le souhaite. */
+async function fsGetAllSorted(colName, extraConstraints, sortField, sortDir='desc', limitN=null, useStoreScope=true){
+  extraConstraints = extraConstraints || [];
+  const scope = (...c)=> useStoreScope ? storeScoped(...c) : c;
+  try{
+    const serverConstraints = [...extraConstraints, orderBy(sortField, sortDir)];
+    if(limitN) serverConstraints.push(limit(limitN));
+    return await fsGetAll(colName, ...scope(...serverConstraints));
+  }catch(e){
+    console.warn(`[BRAINY STORE] Index composite indisponible pour "${colName}" (tri "${sortField}") — repli sur tri local.`, e);
+    let list = await fsGetAll(colName, ...scope(...extraConstraints));
+    list.sort((a,b)=> toDateOrNumSafe(b[sortField]) - toDateOrNumSafe(a[sortField]));
+    if(sortDir==='asc') list.reverse();
+    if(limitN) list = list.slice(0, limitN);
+    return list;
+  }
+}
+function toDateOrNumSafe(v){
+  if(v==null) return 0;
+  if(typeof v === 'number') return v;
+  if(v.toDate) return v.toDate().getTime();
+  if(v instanceof Date) return v.getTime();
+  const d = new Date(v); return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 /* ============================== CRÉATION D'UTILISATEUR (Super Admin) ==============================
    createUserWithEmailAndPassword() connecte automatiquement l'app avec le compte créé.
@@ -956,6 +1034,7 @@ onAuthStateChanged(auth, async (user)=>{
         STATE.stores = STATE.store ? [STATE.store] : [];
       }
 
+      await loadPermissionsConfig();
       await logAudit('connexion','auth', user.uid, 'Connexion utilisateur');
       showApp();
       await preloadReferenceData();
@@ -1107,8 +1186,8 @@ updateSyncPill();
    ========================================================================== */
 async function renderDashboard(root){
   const todayStart = startOfDay(), weekStart = startOfWeek(), monthStart = startOfMonth(), yearStart = startOfYear();
-  const sales = await fsGetAll('sales', ...storeScoped(orderBy('date','desc'), limit(500)));
-  const expenses = await fsGetAll('expenses', ...storeScoped(orderBy('date','desc'), limit(300)));
+  const sales = await fsGetAllSorted('sales', [], 'date', 'desc', 500);
+  const expenses = await fsGetAllSorted('expenses', [], 'date', 'desc', 300);
   const validSales = sales.filter(s=> s.statut !== 'annulee');
 
   const sumInRange = (list, dateField, start) => list
@@ -1430,7 +1509,7 @@ async function renderStock(root){
   );
   root.appendChild(stateGrid);
 
-  const movements = await fsGetAll('stockMovements', ...storeScoped(orderBy('date','desc'), limit(80)));
+  const movements = await fsGetAllSorted('stockMovements', [], 'date', 'desc', 80);
   const card = el('div',{class:'card'}, el('div',{class:'card-head'}, el('h3',{},'Derniers mouvements')), el('div',{class:'table-wrap'}));
   const productMap = new Map(STATE.products.map(p=>[p.id,p]));
   const tbody = el('table',{},
@@ -1543,7 +1622,7 @@ async function renderInventory(root){
 
   // Journal des mouvements — même source de données que l'onglet Stock, pour
   // garantir la synchronisation entre les deux vues.
-  const movements = await fsGetAll('stockMovements', ...storeScoped(orderBy('date','desc'), limit(50)));
+  const movements = await fsGetAllSorted('stockMovements', [], 'date', 'desc', 50);
   const productMap = new Map(STATE.products.map(p=>[p.id,p]));
   const moveCard = el('div',{class:'card', style:'margin-top:16px;'}, el('div',{class:'card-head'}, el('h3',{},'Derniers mouvements de stock')), el('div',{class:'table-wrap'}));
   const moveTable = el('table',{},
@@ -1628,6 +1707,53 @@ async function renderPOS(root){
 
   renderPosGrid('', '');
   renderCart();
+  // Les meilleures ventes sont chargées en arrière-plan (sans bloquer l'affichage
+  // initial) puis la grille est réordonnée dès que les données sont disponibles.
+  ensureBestSellers().then(()=>{ if(STATE.currentSection==='pos') renderPosGrid($('.cat-chip.active')?.dataset.cat==='Tous'?'':$('.cat-chip.active')?.dataset.cat, $('#pos-search')?.value||''); });
+}
+
+/* ---------- Tri intelligent du POS : favoris de l'utilisateur, puis produits les
+   plus vendus, puis le reste (ordre inchangé) ---------- */
+function sortPosProducts(list){
+  const favs = new Set(STATE.profile?.favoris || []);
+  const counts = STATE.salesCountByProduct || {};
+  return list
+    .map((p, idx)=>({ p, idx, fav: favs.has(p.id)?1:0, sold: counts[p.id]||0 }))
+    .sort((a,b)=> (b.fav-a.fav) || (b.sold-a.sold) || (a.idx-b.idx))
+    .map(x=>x.p);
+}
+/** Récupère (avec cache de 60s) les ventes récentes de la boutique pour calculer
+ *  les quantités vendues par produit, utilisées pour prioriser les meilleures ventes
+ *  au Point de vente. Ne modifie ni ne supprime aucune donnée existante : lecture seule. */
+async function computeBestSellers(){
+  try{
+    const sales = await fsGetAllSorted('sales', [], 'date', 'desc', 300);
+    const counts = {};
+    sales.forEach(s=>{
+      if(s.statut==='annulee') return;
+      (s.items||[]).forEach(it=>{ counts[it.productId] = (counts[it.productId]||0) + toInt(it.quantite); });
+    });
+    STATE.salesCountByProduct = counts;
+  }catch(e){ /* silencieux : le tri retombe simplement sur favoris + ordre existant */ }
+}
+async function ensureBestSellers(force=false){
+  const now = Date.now();
+  if(!force && STATE.bestSellersLoadedAt && (now - STATE.bestSellersLoadedAt) < 60000) return;
+  await computeBestSellers();
+  STATE.bestSellersLoadedAt = Date.now();
+}
+/** Ajoute/retire un produit des favoris de l'utilisateur connecté. Enregistré sur son
+ *  profil (users/{uid}.favoris) : propre à chaque utilisateur, synchronisé Firestore,
+ *  ne touche à aucune autre donnée du profil. */
+async function toggleFavorite(productId){
+  if(!STATE.profile) return;
+  const current = new Set(STATE.profile.favoris || []);
+  if(current.has(productId)) current.delete(productId); else current.add(productId);
+  const arr = Array.from(current);
+  STATE.profile.favoris = arr;
+  renderPosGrid($('.cat-chip.active')?.dataset.cat==='Tous'?'':$('.cat-chip.active')?.dataset.cat, $('#pos-search')?.value||'');
+  try{ await fsUpdate('users', STATE.user.uid, { favoris: arr }); }
+  catch(e){ toast(friendlyError(e),'error'); }
 }
 function renderPosGrid(cat, term){
   const grid = $('#pos-products'); if(!grid) return;
@@ -1635,15 +1761,24 @@ function renderPosGrid(cat, term){
   let list = STATE.products.filter(p=> p.actif !== false);
   if(cat) list = list.filter(p=> p.categorie===cat);
   if(term) list = list.filter(p=> [p.nom,p.sku,p.reference,p.codeBarres].some(v=>(v||'').toLowerCase().includes(term)));
+  list = sortPosProducts(list);
   grid.innerHTML = '';
   if(!list.length){ grid.appendChild(el('div',{class:'empty-state'},'Aucun produit trouvé')); return; }
+  const favs = new Set(STATE.profile?.favoris || []);
+  const counts = STATE.salesCountByProduct || {};
   list.forEach(p=>{
     const out = toInt(p.stock) <= 0;
-    grid.appendChild(el('button',{class:`prod-card ${out?'disabled':''}`, onclick:()=> addToCart(p)},
-      el('div',{class:'prod-thumb'}, p.photoUrl ? el('img',{src:p.photoUrl}) : '📦'),
-      el('div',{class:'p-name'}, p.nom),
-      el('div',{class:'p-price'}, money(p.prixVente)),
-      el('div',{class:'p-stock'}, out? 'Rupture' : `Stock: ${toInt(p.stock)}`)
+    const isFav = favs.has(p.id);
+    const sold = counts[p.id] || 0;
+    grid.appendChild(el('div',{class:'prod-card-wrap'},
+      el('button',{class:`prod-card ${out?'disabled':''}`, onclick:()=> addToCart(p)},
+        el('div',{class:'prod-thumb'}, p.photoUrl ? el('img',{src:p.photoUrl}) : '📦'),
+        el('div',{class:'p-name'}, p.nom),
+        el('div',{class:'p-price'}, money(p.prixVente)),
+        el('div',{class:'p-stock'}, out? 'Rupture' : `Stock: ${toInt(p.stock)}`),
+        sold>0 ? el('div',{class:'p-best-badge'}, '🔥 Populaire') : ''
+      ),
+      el('button',{class:`fav-star ${isFav?'active':''}`, type:'button', title: isFav?'Retirer des favoris':'Ajouter aux favoris', onclick:(e)=>{ e.stopPropagation(); toggleFavorite(p.id); }}, isFav?'★':'☆')
     ));
   });
 }
@@ -1847,6 +1982,7 @@ async function finalizeSale({ total, subtotal, discount, customerId, payments, a
 
   STATE.cart = []; STATE.globalDiscount = 0;
   await preloadReferenceData();
+  STATE.bestSellersLoadedAt = 0; // invalide le cache "meilleures ventes" pour refléter cette vente
   toast(`Vente ${numero} enregistrée avec succès.`, 'success');
   return { id:saleId, ...saleData, date:new Date() };
 }
@@ -1921,7 +2057,7 @@ function shareReceiptWhatsApp(sale){
 async function renderSales(root){
   root.innerHTML = '';
   root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Historique des ventes'))));
-  const sales = await fsGetAll('sales', ...storeScoped(orderBy('date','desc'), limit(150)));
+  const sales = await fsGetAllSorted('sales', [], 'date', 'desc', 150);
   const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
   const tbody = el('table',{},
     el('thead',{}, el('tr',{}, el('th',{},'N°'), el('th',{},'Date'), el('th',{},'Vendeur'), el('th',{},'Total'), el('th',{},'Statut'), el('th',{},'Paiement'), el('th',{},''))),
@@ -2052,7 +2188,7 @@ async function renderCashRegister(root){
     return;
   }
 
-  const movements = await fsGetAll('cashMovements', where('cashRegisterId','==',session.id), orderBy('date','desc'));
+  const movements = await fsGetAllSorted('cashMovements', [where('cashRegisterId','==',session.id)], 'date', 'desc', null, false);
   const recettes = movements.filter(m=>m.type==='recette').reduce((a,m)=>a+moneyPlain(m.montant),0);
   const depenses = movements.filter(m=>m.type==='depense').reduce((a,m)=>a+moneyPlain(m.montant),0);
   const retraits = movements.filter(m=>m.type==='retrait').reduce((a,m)=>a+moneyPlain(m.montant),0);
@@ -2141,9 +2277,7 @@ async function renderExpenses(root){
   const f = STATE._expenseFilter;
   const range = periodRange(f.periode);
   let expenses = [];
-  try{
-    expenses = await fsGetAll('expenses', ...storeScoped(orderBy('date','desc'), limit(500)));
-  }catch(e){ expenses = await fsGetAll('expenses', ...storeScoped()); expenses.sort((a,b)=> toDateSafe(b.date)-toDateSafe(a.date)); }
+  expenses = await fsGetAllSorted('expenses', [], 'date', 'desc', 500);
   expenses = expenses.filter(x=> inRange(x.date, range) && (!f.categorie || x.categorie===f.categorie));
   const total = expenses.reduce((a,x)=>a+moneyPlain(x.montant),0);
 
@@ -2410,7 +2544,7 @@ function openFinanceMovementForm(){
 async function renderAudit(root){
   root.innerHTML = '';
   root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},"Journal d'activité"))));
-  const logs = await fsGetAll('auditLogs', ...storeScoped(orderBy('date','desc'), limit(200)));
+  const logs = await fsGetAllSorted('auditLogs', [], 'date', 'desc', 200);
   const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
   const tbody = el('table',{},
     el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Utilisateur'), el('th',{},'Action'), el('th',{},'Module'), el('th',{},'Détails'))),
@@ -2445,7 +2579,10 @@ async function renderUsers(root){
 
   root.appendChild(el('div',{class:'section-head'},
     el('div',{}, el('h2',{},'Utilisateurs'), el('div',{class:'sub'}, `${users.length} compte(s) — 3 niveaux : Super Administrateur, Gérant, Caissier`)),
-    el('button',{class:'btn btn-primary', onclick: ()=> openUserFormModal(null, stores)}, '+ Nouvel utilisateur')
+    el('div',{style:'display:flex; gap:8px; flex-wrap:wrap;'},
+      el('button',{class:'btn btn-outline', onclick: openPermissionsModal}, '🔐 Permissions par niveau'),
+      el('button',{class:'btn btn-primary', onclick: ()=> openUserFormModal(null, stores)}, '+ Nouvel utilisateur')
+    )
   ));
 
   const card = el('div',{class:'card'});
@@ -2497,6 +2634,83 @@ async function renderUsers(root){
   wrap.appendChild(table);
   card.appendChild(wrap);
   root.appendChild(card);
+}
+
+/* ==========================================================================
+   PERMISSIONS PAR NIVEAU (Super Administrateur uniquement)
+   Permet de choisir, pour chaque niveau (Gérant, Caissier), les onglets
+   accessibles. Les rôles hérités (admin/comptable/magasinier → tier "gerant",
+   vendeur → tier "caissier", voir roleTier()) suivent automatiquement les
+   permissions de leur niveau, sans qu'il soit besoin de les configurer à part.
+   Rien n'est modifié tant que le Super Admin n'enregistre pas volontairement
+   une configuration : le comportement par défaut (TIER_PERMISSIONS) reste
+   inchangé pour ne casser aucun compte existant. ========================== */
+function openPermissionsModal(){
+  if(!isSuperAdmin()){ toast("Seul le Super Administrateur peut gérer les permissions.",'warning'); return; }
+  const editableTiers = ['gerant','caissier'];
+  const working = {};
+  editableTiers.forEach(t=> working[t] = new Set(effectivePermissions(t)));
+  let activeTier = 'gerant';
+
+  const tabsBar = el('div',{style:'display:flex; gap:8px; margin-bottom:14px;'});
+  const listWrap = el('div',{id:'perm-list-wrap', style:'max-height:48vh; overflow-y:auto;'});
+
+  function renderTabsBar(){
+    tabsBar.innerHTML = '';
+    editableTiers.forEach(t=>{
+      tabsBar.appendChild(el('button',{
+        class:`btn btn-sm ${activeTier===t?'btn-primary':'btn-outline'}`, type:'button',
+        onclick:()=>{ activeTier=t; renderTabsBar(); renderCheckboxList(); }
+      }, TIER_LABELS[t]));
+    });
+  }
+  function renderCheckboxList(){
+    listWrap.innerHTML = '';
+    NAV_GROUPS.forEach(group=>{
+      const items = group.items.filter(it=> !PERMISSION_LOCKED_KEYS.includes(it.key));
+      if(!items.length) return;
+      listWrap.appendChild(el('div',{class:'nav-group-label', style:'padding-left:0; margin-top:12px;'}, group.label));
+      items.forEach(it=>{
+        const checked = working[activeTier].has(it.key);
+        listWrap.appendChild(el('label',{style:'display:flex; align-items:center; gap:9px; padding:6px 2px; font-size:13.5px; cursor:pointer;'},
+          el('input',{type:'checkbox', checked: checked?'checked':null, onchange:(e)=>{
+            if(e.target.checked) working[activeTier].add(it.key); else working[activeTier].delete(it.key);
+          }}),
+          el('span',{}, it.icon+' '+it.label)
+        ));
+      });
+    });
+  }
+  renderTabsBar(); renderCheckboxList();
+
+  const body = el('div',{},
+    el('div',{class:'text-dim', style:'font-size:12.5px; margin-bottom:12px;'},
+      "Choisissez précisément les onglets accessibles à chaque niveau. Le Super Administrateur conserve toujours un accès complet à tout le logiciel. L'onglet « Utilisateurs » reste réservé au Super Administrateur dans tous les cas. Les rôles hérités (Administrateur, Comptable, Magasinier → alignés sur Gérant ; Vendeur → aligné sur Caissier) suivent automatiquement les permissions de leur niveau."
+    ),
+    tabsBar, listWrap
+  );
+
+  openModal({
+    title:'🔐 Permissions par niveau d\'utilisateur',
+    body, wide:true,
+    footButtons:[
+      el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+      el('button',{class:'btn btn-primary', onclick: async (e)=>{
+        const btn = e.currentTarget; btn.disabled = true;
+        try{
+          const tiersData = {};
+          editableTiers.forEach(t=> tiersData[t] = Array.from(working[t]));
+          await fsSet('settings','permissions', { tiers: tiersData, modifiePar: STATE.user.uid, dateModification: serverTimestamp() });
+          STATE.customPermissions = tiersData;
+          await logAudit('modification','settings','permissions','Permissions par niveau mises à jour');
+          toast('Permissions mises à jour.','success');
+          closeModal();
+          renderSidebar();
+          if(!can(STATE.currentSection)) navigateTo('dashboard'); else navigateTo(STATE.currentSection);
+        }catch(err){ toast(friendlyError(err),'error'); btn.disabled = false; }
+      }}, 'Enregistrer les permissions')
+    ]
+  });
 }
 
 function openUserFormModal(user, stores){
@@ -2674,6 +2888,858 @@ async function renderSettings(root){
 /* ==========================================================================
    TABLE DES SECTIONS
    ========================================================================== */
+/* ==========================================================================
+   HELPERS UI PARTAGÉS (modules Phase 2)
+   ========================================================================== */
+function fld(label,id,value,type='text'){
+  return el('div',{class:'form-row'}, el('label',{},label), el('input',{class:'input', id, type, value: value ?? ''}));
+}
+function selectFld(label,id,options,selectedVal){
+  return el('div',{class:'form-row'}, el('label',{},label),
+    el('select',{class:'input', id}, ...options.map(([v,l])=> el('option',{value:v, selected: String(selectedVal)===String(v)?'selected':null}, l))));
+}
+function statusBadge(text, kind){ return el('span',{class:`badge badge-${kind}`}, text); }
+function accessDeniedBlock(msg){
+  return `<div class="empty-state"><div class="ic">🔒</div><div class="t">Accès réservé</div><div>${escapeHtml(msg||"Vous n'avez pas accès à cette section.")}</div></div>`;
+}
+
+/* ==========================================================================
+   FOURNISSEURS
+   ========================================================================== */
+async function renderSuppliers(root){
+  root.innerHTML = '';
+  if(!can('suppliers')){ root.innerHTML = accessDeniedBlock(); return; }
+  let suppliers = [];
+  try{ suppliers = await fsGetAll('suppliers', ...storeScoped()); }catch(e){ suppliers = await fsGetAll('suppliers').catch(()=>[]); }
+  suppliers.sort((a,b)=> (a.nom||'').localeCompare(b.nom||''));
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Fournisseurs'), el('div',{class:'sub'}, `${suppliers.length} fournisseur(s)`)),
+    canManagePurchases() ? el('button',{class:'btn btn-primary', onclick:()=>openSupplierForm(null)}, '+ Nouveau fournisseur') : ''
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Contact'), el('th',{},'Téléphone'), el('th',{},'Email'), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(suppliers.length? suppliers.map(s=> el('tr',{},
+      el('td',{style:'font-weight:600;'}, s.nom||'—'),
+      el('td',{}, s.contact||'—'),
+      el('td',{}, s.telephone||'—'),
+      el('td',{}, s.email||'—'),
+      el('td',{}, s.actif===false? statusBadge('Inactif','neutral') : statusBadge('Actif','success')),
+      el('td',{class:'flex gap-6'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openSupplierForm(s)},'✏️'),
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>{ navigateTo('purchases'); }},'📦'),
+        canManagePurchases()? el('button',{class:'btn btn-danger btn-sm', onclick:()=>deleteSupplier(s)},'Suppr.') : ''
+      )
+    )) : [el('tr',{}, el('td',{colspan:'6',class:'empty-state'},'Aucun fournisseur. Ajoutez-en un pour pouvoir enregistrer des achats.'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function openSupplierForm(supplier){
+  const isEdit = !!supplier;
+  const s = supplier || { nom:'', contact:'', telephone:'', email:'', adresse:'', notes:'' };
+  const body = el('div',{},
+    el('div',{class:'form-grid'},
+      fld('Nom du fournisseur *','sup-nom',s.nom),
+      fld('Personne de contact','sup-contact',s.contact),
+      fld('Téléphone','sup-tel',s.telephone),
+      fld('Email','sup-email',s.email),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Adresse'), el('textarea',{class:'input', id:'sup-addr', rows:'2'}, s.adresse||'')),
+    el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'sup-notes', rows:'2'}, s.notes||''))
+  );
+  openModal({ title: isEdit?'Modifier le fournisseur':'Nouveau fournisseur', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const nom = $('#sup-nom').value.trim();
+      if(!nom){ toast('Le nom du fournisseur est requis.','warning'); return; }
+      const data = { nom, contact:$('#sup-contact').value.trim(), telephone:$('#sup-tel').value.trim(), email:$('#sup-email').value.trim(), adresse:$('#sup-addr').value.trim(), notes:$('#sup-notes').value.trim(), boutiqueId: currentStoreId(), actif:true };
+      try{
+        if(isEdit){ await fsUpdate('suppliers', s.id, data); await logAudit('modification','suppliers', s.id, `Fournisseur modifié : ${nom}`); toast('Fournisseur mis à jour.','success'); }
+        else { const id = await fsAdd('suppliers', data); await logAudit('creation','suppliers', id, `Fournisseur créé : ${nom}`); toast('Fournisseur créé.','success'); }
+        closeModal(); navigateTo('suppliers');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+}
+async function deleteSupplier(s){
+  const ok = await confirmDialog(`Supprimer le fournisseur "${s.nom}" ? Les achats déjà enregistrés ne seront pas affectés.`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{ await fsDelete('suppliers', s.id); await logAudit('suppression','suppliers', s.id, `Fournisseur "${s.nom}" supprimé`); toast('Fournisseur supprimé.','success'); navigateTo('suppliers'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   ACHATS — liés aux fournisseurs, la réception met à jour le stock réel
+   ========================================================================== */
+async function renderPurchases(root){
+  root.innerHTML = '';
+  if(!can('purchases')){ root.innerHTML = accessDeniedBlock(); return; }
+  let purchases = [];
+  try{ purchases = await fsGetAllSorted('purchases', [], 'date', 'desc', 200); }
+  catch(e){ purchases = await fsGetAll('purchases', ...storeScoped()).catch(()=>[]); }
+  let suppliers = [];
+  try{ suppliers = await fsGetAll('suppliers', ...storeScoped()); }catch(e){ suppliers = await fsGetAll('suppliers').catch(()=>[]); }
+  const total = purchases.reduce((a,p)=>a+moneyPlain(p.total),0);
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Achats'), el('div',{class:'sub'}, `${purchases.length} bon(s) d'achat — total ${money(total)}`)),
+    canManagePurchases() ? el('button',{class:'btn btn-primary', onclick:()=>openPurchaseForm(suppliers)}, '+ Nouvel achat') : ''
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'N°'), el('th',{},'Date'), el('th',{},'Fournisseur'), el('th',{},'Articles'), el('th',{},'Total'), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(purchases.length? purchases.map(p=> el('tr',{},
+      el('td',{class:'mono'}, p.numero||'—'),
+      el('td',{}, fmtDate(p.date,true)),
+      el('td',{}, p.supplierNom||'—'),
+      el('td',{}, `${(p.items||[]).length} article(s)`),
+      el('td',{style:'font-weight:700;'}, money(p.total)),
+      el('td',{}, p.statut==='receptionnee'? statusBadge('Réceptionné','success') : p.statut==='annulee'? statusBadge('Annulé','danger') : statusBadge('Commandé','warning')),
+      el('td',{class:'flex gap-6'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openPurchaseDetail(p)}, 'Détail'),
+        (p.statut==='commande' && canManagePurchases()) ? el('button',{class:'btn btn-primary btn-sm', onclick:()=>receivePurchase(p)}, '✅ Réceptionner') : '',
+        (p.statut==='commande' && canManagePurchases()) ? el('button',{class:'btn btn-danger btn-sm', onclick:()=>cancelPurchase(p)}, 'Annuler') : ''
+      )
+    )) : [el('tr',{}, el('td',{colspan:'7',class:'empty-state'},"Aucun achat enregistré"))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function openPurchaseForm(suppliers){
+  if(!suppliers.length){ toast("Créez d'abord un fournisseur avant d'enregistrer un achat.",'warning'); return; }
+  if(!STATE.products.length){ toast('Créez au moins un produit avant d\'enregistrer un achat.','warning'); return; }
+  let rows = [{ productId:'', quantite:1, prixUnitaire:0 }];
+  const body = el('div',{});
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Fournisseur *'), el('select',{class:'input', id:'pu-supplier'}, ...suppliers.map(s=>el('option',{value:s.id}, s.nom)))));
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Date'), el('input',{class:'input', type:'date', id:'pu-date', value:new Date().toISOString().slice(0,10)})));
+  const rowsWrap = el('div',{id:'pu-rows'});
+  const totalDisplay = el('div',{class:'sum-row total', style:'margin-top:10px;'}, el('span',{},'Total'), el('span',{id:'pu-total'}, money(0)));
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Articles'), rowsWrap,
+    el('button',{type:'button', class:'btn btn-outline btn-sm', style:'margin-top:8px;', onclick:()=>{ rows.push({productId:'',quantite:1,prixUnitaire:0}); drawRows(); }}, '+ Ajouter une ligne')));
+  body.appendChild(totalDisplay);
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'pu-notes', rows:'2'})));
+
+  function computeTotal(){ return rows.reduce((a,r)=> a + toInt(r.quantite)*toInt(r.prixUnitaire), 0); }
+  function drawRows(){
+    rowsWrap.innerHTML = '';
+    rows.forEach((r,idx)=>{
+      const prodSel = el('select',{class:'input', style:'flex:2;', onchange:(e)=>{ r.productId=e.target.value; const prod=STATE.products.find(x=>x.id===r.productId); if(prod){ r.prixUnitaire = toInt(prod.prixAchat)||0; } drawRows(); }},
+        el('option',{value:''},'— Choisir un produit —'),
+        ...STATE.products.map(p=>el('option',{value:p.id, selected:r.productId===p.id?'selected':null}, p.nom)));
+      const qtyInp = el('input',{class:'input', type:'number', min:'1', style:'flex:1;', value:r.quantite, oninput:(e)=>{ r.quantite=toInt(e.target.value)||1; $('#pu-total').textContent = money(computeTotal()); }});
+      const costInp = el('input',{class:'input', type:'number', min:'0', style:'flex:1;', value:r.prixUnitaire, oninput:(e)=>{ r.prixUnitaire=toInt(e.target.value)||0; $('#pu-total').textContent = money(computeTotal()); }});
+      rowsWrap.appendChild(el('div',{style:'display:flex; gap:8px; align-items:center; margin-bottom:8px;'},
+        prodSel, qtyInp, costInp,
+        el('button',{type:'button', class:'btn btn-ghost btn-sm', onclick:()=>{ rows.splice(idx,1); if(!rows.length) rows.push({productId:'',quantite:1,prixUnitaire:0}); drawRows(); }}, '✕')
+      ));
+    });
+    $('#pu-total').textContent = money(computeTotal());
+  }
+  drawRows();
+  openModal({ title:'Nouvel achat', body, wide:true, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async (e)=>{
+      const supplierId = $('#pu-supplier').value;
+      const supplier = suppliers.find(s=>s.id===supplierId);
+      const validRows = rows.filter(r=> r.productId && toInt(r.quantite)>0);
+      if(!supplierId || !validRows.length){ toast('Sélectionnez un fournisseur et au moins un article valide.','warning'); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      try{
+        const numero = await nextNumber('ACH');
+        const items = validRows.map(r=>{ const prod = STATE.products.find(p=>p.id===r.productId); return { productId:r.productId, nom:prod?.nom||'—', quantite:toInt(r.quantite), prixUnitaire:toInt(r.prixUnitaire) }; });
+        const purchaseTotal = items.reduce((a,i)=>a+i.quantite*i.prixUnitaire,0);
+        const dateVal = $('#pu-date').value ? new Date($('#pu-date').value) : new Date();
+        const data = { numero, supplierId, supplierNom:supplier?.nom||'', items, total:purchaseTotal, statut:'commande', notes:$('#pu-notes').value.trim(), boutiqueId: currentStoreId(), userId: STATE.user.uid, date: Timestamp.fromDate(dateVal) };
+        const id = await fsAdd('purchases', data);
+        await logAudit('creation','purchases', id, `Achat ${numero} créé (${money(purchaseTotal)}) — fournisseur ${supplier?.nom||''}`);
+        toast("Achat enregistré. Cliquez sur « Réceptionner » quand la marchandise arrive pour mettre à jour le stock.",'success');
+        closeModal(); navigateTo('purchases');
+      }catch(error){ toast(friendlyError(error),'error'); btn.disabled=false; }
+    }}, "Enregistrer l'achat")
+  ]});
+}
+function openPurchaseDetail(p){
+  openModal({ title:`Achat ${p.numero}`, body: el('div',{},
+    el('p',{}, el('b',{},'Fournisseur : '), p.supplierNom||'—'),
+    el('p',{}, el('b',{},'Date : '), fmtDate(p.date,true)),
+    el('p',{}, el('b',{},'Statut : '), p.statut==='receptionnee'?'Réceptionné':p.statut==='annulee'?'Annulé':'Commandé'),
+    el('table',{style:'margin-top:10px;width:100%;'},
+      el('thead',{}, el('tr',{}, el('th',{},'Produit'), el('th',{},'Qté'), el('th',{},'PU'), el('th',{},'Total'))),
+      el('tbody',{}, ...(p.items||[]).map(i=> el('tr',{}, el('td',{},i.nom), el('td',{},i.quantite), el('td',{},money(i.prixUnitaire)), el('td',{},money(i.quantite*i.prixUnitaire)))))
+    ),
+    p.notes? el('p',{style:'margin-top:10px;'}, el('b',{},'Notes : '), p.notes) : ''
+  ), footButtons:[ el('button',{class:'btn btn-outline', onclick:closeModal},'Fermer') ]});
+}
+async function receivePurchase(p){
+  const ok = await confirmDialog(`Réceptionner l'achat ${p.numero} ? Le stock des ${((p.items||[]).length)} article(s) sera mis à jour.`, {title:"Réception d'achat"});
+  if(!ok) return;
+  const done = [];
+  try{
+    for(const item of (p.items||[])){
+      await adjustStock(item.productId, item.quantite, 'achat', `Réception achat ${p.numero}`, p.id);
+      done.push(item);
+    }
+    await fsUpdate('purchases', p.id, { statut:'receptionnee', dateReception: serverTimestamp() });
+    await logAudit('reception','purchases', p.id, `Achat ${p.numero} réceptionné`);
+    toast('Achat réceptionné, stock mis à jour.','success');
+    await preloadReferenceData();
+    navigateTo('purchases');
+  }catch(error){
+    for(const item of done){ try{ await adjustStock(item.productId, -item.quantite, 'ajustement', `Annulation automatique — échec réception achat ${p.numero}`, p.id); }catch(e2){} }
+    toast(friendlyError(error),'error');
+  }
+}
+async function cancelPurchase(p){
+  const ok = await confirmDialog(`Annuler l'achat ${p.numero} ?`, {title:'Annulation', danger:true});
+  if(!ok) return;
+  try{ await fsUpdate('purchases', p.id, { statut:'annulee' }); await logAudit('annulation','purchases', p.id, `Achat ${p.numero} annulé`); toast('Achat annulé.','success'); navigateTo('purchases'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   TRANSFERTS — mouvements de stock entre boutiques/emplacements
+   Le stock de la boutique source est décrémenté immédiatement à la création.
+   La boutique de destination réceptionne ensuite le transfert, ce qui
+   incrémente son propre stock (produit existant retrouvé par SKU/référence,
+   ou créé automatiquement si absent). Chaque mouvement est journalisé.
+   ========================================================================== */
+async function renderTransfers(root){
+  root.innerHTML='';
+  if(!can('transfers')){ root.innerHTML = accessDeniedBlock(); return; }
+  let outgoing = [], incoming = [];
+  try{
+    outgoing = isSuperAdmin()
+      ? await fsGetAllSorted('transfers', [], 'date', 'desc', 200, false)
+      : await fsGetAllSorted('transfers', [where('sourceStoreId','==', currentStoreId())], 'date', 'desc', 200, false);
+  }catch(e){ outgoing = []; }
+  try{
+    incoming = isSuperAdmin() ? [] : await fsGetAllSorted('transfers', [where('destStoreId','==', currentStoreId()), where('statut','==','in_transit')], 'date', 'desc', 200, false);
+  }catch(e){ incoming = []; }
+
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Transferts'), el('div',{class:'sub'}, isSuperAdmin()? `${outgoing.length} transfert(s) (toutes boutiques)` : `${outgoing.length} sortant(s) · ${incoming.length} en attente de réception`)),
+    canManageTransfers() ? el('button',{class:'btn btn-primary', onclick:()=>openTransferForm()}, '+ Nouveau transfert') : ''
+  ));
+
+  if(!isSuperAdmin() && incoming.length){
+    root.appendChild(el('div',{class:'card', style:'margin-bottom:16px;padding:14px;border-color:var(--warning);'},
+      el('div',{style:'font-weight:700;margin-bottom:8px;'}, `📥 ${incoming.length} transfert(s) en attente de réception`),
+      ...incoming.map(t=> el('div',{style:'display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border);flex-wrap:wrap;gap:8px;'},
+        el('div',{}, el('div',{},`${t.productNom} — Qté ${t.quantite}`), el('div',{class:'text-faint',style:'font-size:12px;'}, `Depuis : ${t.sourceStoreNom||t.sourceStoreId}`)),
+        el('button',{class:'btn btn-primary btn-sm', onclick:()=>receiveTransfer(t)}, '✅ Réceptionner')
+      ))
+    ));
+  }
+
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'N°'), el('th',{},'Date'), el('th',{},'Produit'), el('th',{},'Qté'), el('th',{},'De'), el('th',{},'Vers'), el('th',{},'Statut'))),
+    el('tbody',{}, ...(outgoing.length? outgoing.map(t=> el('tr',{},
+      el('td',{class:'mono'}, t.numero||'—'),
+      el('td',{}, fmtDate(t.date,true)),
+      el('td',{}, t.productNom),
+      el('td',{}, t.quantite),
+      el('td',{}, t.sourceStoreNom||t.sourceStoreId),
+      el('td',{}, t.destStoreNom||t.destStoreId),
+      el('td',{}, t.statut==='receptionne'? statusBadge('Réceptionné','success') : t.statut==='annule'? statusBadge('Annulé','danger') : statusBadge('En transit','warning'))
+    )) : [el('tr',{}, el('td',{colspan:'7',class:'empty-state'},'Aucun transfert'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+async function openTransferForm(){
+  if(!STATE.products.length){ toast('Aucun produit disponible à transférer.','warning'); return; }
+  let destStores = [];
+  if(isSuperAdmin()){
+    try{ destStores = (await fsGetAll('stores')).filter(s=> s.id !== STATE.store?.id); }catch(e){ destStores = STATE.stores.filter(s=>s.id!==STATE.store?.id); }
+  }
+  const body = el('div',{});
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Produit à transférer *'),
+    el('select',{class:'input', id:'tr-product'}, el('option',{value:''},'— Choisir —'), ...STATE.products.map(p=>el('option',{value:p.id}, `${p.nom} (stock: ${toInt(p.stock)})`)))));
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Quantité *'), el('input',{class:'input', id:'tr-qty', type:'number', min:'1', value:'1'})));
+  if(isSuperAdmin() && destStores.length){
+    body.appendChild(el('div',{class:'form-row'}, el('label',{},'Boutique de destination *'),
+      el('select',{class:'input', id:'tr-dest'}, el('option',{value:''},'— Choisir —'), ...destStores.map(s=>el('option',{value:s.id}, s.nom)))));
+  } else {
+    body.appendChild(el('div',{class:'form-row'}, el('label',{},'Identifiant de la boutique de destination *'),
+      el('input',{class:'input', id:'tr-dest', placeholder:'ID de la boutique (fourni par le Super Administrateur)'}),
+      el('div',{class:'text-faint', style:'font-size:12px;margin-top:4px;'}, "Seul un Super Administrateur peut voir la liste complète des boutiques. Demandez-lui l'identifiant exact de la boutique de destination.")
+    ));
+  }
+  body.appendChild(el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'tr-notes', rows:'2'})));
+
+  openModal({ title:'Nouveau transfert', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async (e)=>{
+      const productId = $('#tr-product').value, qty = toInt($('#tr-qty').value), destStoreId = $('#tr-dest').value.trim();
+      const prod = STATE.products.find(p=>p.id===productId);
+      if(!productId || qty<=0 || !destStoreId){ toast('Renseignez le produit, la quantité et la destination.','warning'); return; }
+      if(destStoreId === currentStoreId()){ toast('La boutique de destination doit être différente de la boutique actuelle.','warning'); return; }
+      if(qty > toInt(prod?.stock)){ toast('Quantité supérieure au stock disponible.','warning'); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      try{
+        let destStoreNom = (destStores.find(s=>s.id===destStoreId)||{}).nom || '';
+        if(!destStoreNom){ try{ const ds = await fsGet('stores', destStoreId); destStoreNom = ds?.nom||''; }catch(e2){} }
+        const numero = await nextNumber('TRF');
+        await adjustStock(productId, -qty, 'transfert_sortie', `Transfert ${numero} vers ${destStoreNom||destStoreId}`, null);
+        const data = {
+          numero, productId, productNom: prod.nom, productSku: prod.sku||'', productReference: prod.reference||'', quantite: qty,
+          sourceStoreId: currentStoreId(), sourceStoreNom: STATE.store?.nom||'', destStoreId, destStoreNom,
+          statut:'in_transit', notes: $('#tr-notes').value.trim(), userId: STATE.user.uid, date: serverTimestamp()
+        };
+        const id = await fsAdd('transfers', data);
+        await logAudit('creation','transfers', id, `Transfert ${numero} : ${qty} x ${prod.nom} vers ${destStoreNom||destStoreId}`);
+        toast('Transfert créé. Le stock de la boutique source a été décrémenté.','success');
+        await preloadReferenceData();
+        closeModal(); navigateTo('transfers');
+      }catch(error){ toast(friendlyError(error),'error'); btn.disabled=false; }
+    }}, 'Créer le transfert')
+  ]});
+}
+async function receiveTransfer(t){
+  let destProducts = [];
+  try{ destProducts = await fsGetAll('products', where('boutiqueId','==', currentStoreId())); }catch(e){ destProducts = []; }
+  const match = destProducts.find(p=> (t.productSku && p.sku===t.productSku) || (t.productReference && p.reference===t.productReference) || p.nom===t.productNom);
+  const ok = await confirmDialog(
+    match ? `Réceptionner ${t.quantite} x "${t.productNom}" ? Le stock sera ajouté au produit existant "${match.nom}".`
+          : `Aucun produit correspondant trouvé dans votre boutique. Un nouveau produit "${t.productNom}" sera créé avec ${t.quantite} en stock initial.`,
+    { title:'Réception de transfert' }
+  );
+  if(!ok) return;
+  try{
+    let targetId = match?.id;
+    if(!targetId){
+      targetId = await fsAdd('products', {
+        nom: t.productNom, reference: t.productReference||'', sku: t.productSku||'', categorie:'', marque:'',
+        prixAchat:0, prixVente:0, stock:0, stockMinimum:5, unite:'unité', description:'Créé automatiquement lors de la réception d\'un transfert.', photoUrl:'', photoPath:'',
+        boutiqueId: currentStoreId(), actif:true
+      });
+    }
+    await adjustStock(targetId, t.quantite, 'transfert_entree', `Réception transfert ${t.numero} depuis ${t.sourceStoreNom||t.sourceStoreId}`, t.id);
+    await fsUpdate('transfers', t.id, { statut:'receptionne', dateReception: serverTimestamp(), receptionUserId: STATE.user.uid, destProductId: targetId });
+    await logAudit('reception','transfers', t.id, `Transfert ${t.numero} réceptionné`);
+    toast('Transfert réceptionné, stock mis à jour.','success');
+    await preloadReferenceData();
+    navigateTo('transfers');
+  }catch(error){ toast(friendlyError(error),'error'); }
+}
+
+/* ==========================================================================
+   PROMOTIONS — appliquées automatiquement au Point de vente
+   ========================================================================== */
+async function renderPromotions(root){
+  root.innerHTML='';
+  if(!can('promotions')){ root.innerHTML = accessDeniedBlock(); return; }
+  await ensurePromotionsCache(true);
+  const promos = STATE.promotionsCache.slice().sort((a,b)=> toDateOrNumSafe(b.dateDebut)-toDateOrNumSafe(a.dateDebut));
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Promotions'), el('div',{class:'sub'}, `${promos.length} promotion(s) — appliquées automatiquement au point de vente`)),
+    canManagePromotionsLoyalty() ? el('button',{class:'btn btn-primary', onclick:()=>openPromotionForm(null)}, '+ Nouvelle promotion') : ''
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Cible'), el('th',{},'Réduction'), el('th',{},'Période'), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(promos.length? promos.map(pr=>{
+      const active = isPromotionActive(pr);
+      return el('tr',{},
+        el('td',{style:'font-weight:600;'}, pr.nom),
+        el('td',{}, pr.cible==='produit' ? `Produit : ${STATE.products.find(p=>p.id===pr.productId)?.nom||'—'}` : pr.cible==='categorie' ? `Catégorie : ${pr.categorie||'—'}` : 'Tout le catalogue'),
+        el('td',{}, pr.type==='pourcentage' ? `${pr.valeur}%` : money(pr.valeur)),
+        el('td',{}, `${pr.dateDebut?fmtDate(pr.dateDebut):'—'} → ${pr.dateFin?fmtDate(pr.dateFin):'—'}`),
+        el('td',{}, pr.actif===false ? statusBadge('Désactivée','neutral') : active ? statusBadge('En cours','success') : statusBadge('Hors période','warning')),
+        el('td',{class:'flex gap-6'},
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=>openPromotionForm(pr)}, '✏️'),
+          canManagePromotionsLoyalty()? el('button',{class:'btn btn-danger btn-sm', onclick:()=>deletePromotion(pr)},'Suppr.') : ''
+        )
+      );
+    }) : [el('tr',{}, el('td',{colspan:'6',class:'empty-state'},'Aucune promotion. Créez-en une pour offrir une réduction automatique au POS.'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function isPromotionActive(pr){
+  if(!pr || pr.actif===false) return false;
+  const now = new Date();
+  const start = pr.dateDebut ? toDate(pr.dateDebut) : null;
+  const end = pr.dateFin ? toDate(pr.dateFin) : null;
+  if(start && now < start) return false;
+  if(end && now > new Date(end.getTime()+86400000)) return false;
+  return true;
+}
+function getActivePromotionForProduct(product){
+  if(!product || !STATE.promotionsCache || !STATE.promotionsCache.length) return null;
+  const applicable = STATE.promotionsCache.filter(pr=> isPromotionActive(pr) && (
+    pr.cible==='tout' || (pr.cible==='produit' && pr.productId===product.id) || (pr.cible==='categorie' && pr.categorie && pr.categorie===product.categorie)
+  ));
+  if(!applicable.length) return null;
+  return applicable.reduce((best,pr)=>{
+    const discBest = best ? (best.type==='pourcentage'? toInt(product.prixVente)*toInt(best.valeur)/100 : toInt(best.valeur)) : -1;
+    const discCur = pr.type==='pourcentage'? toInt(product.prixVente)*toInt(pr.valeur)/100 : toInt(pr.valeur);
+    return discCur > discBest ? pr : best;
+  }, null);
+}
+async function ensurePromotionsCache(force=false){
+  const now = Date.now();
+  if(!force && STATE.promotionsCache.length !== undefined && STATE._promoCacheAt && (now-STATE._promoCacheAt)<60000) return;
+  try{ STATE.promotionsCache = await fsGetAll('promotions', ...storeScoped()); }
+  catch(e){ try{ STATE.promotionsCache = await fsGetAll('promotions'); }catch(e2){ STATE.promotionsCache = []; } }
+  STATE._promoCacheAt = Date.now();
+}
+function openPromotionForm(promo){
+  const isEdit = !!promo;
+  const pr = promo || { nom:'', type:'pourcentage', valeur:10, cible:'tout', productId:'', categorie:'', dateDebut:'', dateFin:'', actif:true };
+  const cats = Array.from(new Set(STATE.products.map(p=>p.categorie).filter(Boolean)));
+  const body = el('div',{});
+  body.appendChild(fld('Nom de la promotion *','pr-nom',pr.nom));
+  body.appendChild(el('div',{class:'form-grid'},
+    selectFld('Type de réduction','pr-type',[['pourcentage','Pourcentage (%)'],['montant','Montant fixe (FCFA)']], pr.type),
+    fld('Valeur *','pr-valeur',pr.valeur,'number')
+  ));
+  body.appendChild(selectFld('Cible','pr-cible',[['tout','Tout le catalogue'],['categorie','Une catégorie'],['produit','Un produit précis']], pr.cible));
+  body.appendChild(el('div',{class:'form-row', id:'pr-cat-row', style: pr.cible==='categorie'?'':'display:none;'}, el('label',{},'Catégorie'), el('select',{class:'input', id:'pr-cat'}, ...cats.map(c=>el('option',{value:c, selected:pr.categorie===c?'selected':null},c)))));
+  body.appendChild(el('div',{class:'form-row', id:'pr-prod-row', style: pr.cible==='produit'?'':'display:none;'}, el('label',{},'Produit'), el('select',{class:'input', id:'pr-prod'}, ...STATE.products.map(p=>el('option',{value:p.id, selected:pr.productId===p.id?'selected':null},p.nom)))));
+  body.appendChild(el('div',{class:'form-grid'},
+    el('div',{class:'form-row'}, el('label',{},'Date de début'), el('input',{class:'input', type:'date', id:'pr-debut', value: pr.dateDebut? toDate(pr.dateDebut).toISOString().slice(0,10) : ''})),
+    el('div',{class:'form-row'}, el('label',{},'Date de fin'), el('input',{class:'input', type:'date', id:'pr-fin', value: pr.dateFin? toDate(pr.dateFin).toISOString().slice(0,10) : ''}))
+  ));
+  body.appendChild(el('div',{class:'form-row'},
+    el('label',{}, el('input',{type:'checkbox', id:'pr-actif', checked: pr.actif!==false ? 'checked' : null, style:'margin-right:6px;'}), 'Promotion active')));
+  openModal({ title: isEdit?'Modifier la promotion':'Nouvelle promotion', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const nom = $('#pr-nom').value.trim();
+      const valeur = toInt($('#pr-valeur').value);
+      const cible = $('#pr-cible').value;
+      if(!nom || valeur<=0){ toast('Nom et valeur valides requis.','warning'); return; }
+      const data = {
+        nom, type:$('#pr-type').value, valeur, cible,
+        categorie: cible==='categorie' ? $('#pr-cat').value : '',
+        productId: cible==='produit' ? $('#pr-prod').value : '',
+        dateDebut: $('#pr-debut').value ? Timestamp.fromDate(new Date($('#pr-debut').value)) : null,
+        dateFin: $('#pr-fin').value ? Timestamp.fromDate(new Date($('#pr-fin').value)) : null,
+        actif: $('#pr-actif').checked, boutiqueId: currentStoreId()
+      };
+      try{
+        if(isEdit){ await fsUpdate('promotions', pr.id, data); await logAudit('modification','promotions', pr.id, `Promotion modifiée : ${nom}`); toast('Promotion mise à jour.','success'); }
+        else { const id = await fsAdd('promotions', data); await logAudit('creation','promotions', id, `Promotion créée : ${nom}`); toast('Promotion créée.','success'); }
+        await ensurePromotionsCache(true);
+        closeModal(); navigateTo('promotions');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+  setTimeout(()=>{
+    const cibleSel = $('#pr-cible');
+    if(cibleSel) cibleSel.addEventListener('change', (e)=>{
+      $('#pr-cat-row').style.display = e.target.value==='categorie' ? '' : 'none';
+      $('#pr-prod-row').style.display = e.target.value==='produit' ? '' : 'none';
+    });
+  },0);
+}
+async function deletePromotion(pr){
+  const ok = await confirmDialog(`Supprimer la promotion "${pr.nom}" ?`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{ await fsDelete('promotions', pr.id); await logAudit('suppression','promotions', pr.id, `Promotion "${pr.nom}" supprimée`); toast('Promotion supprimée.','success'); await ensurePromotionsCache(true); navigateTo('promotions'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   FIDÉLITÉ — liée aux clients et aux ventes (points crédités automatiquement)
+   ========================================================================== */
+const DEFAULT_LOYALTY_CONFIG = { pointsPerAmount: 1000, redeemRate: 50 };
+async function loadLoyaltyConfig(){
+  if(STATE.loyaltyConfig) return STATE.loyaltyConfig;
+  try{ const cfg = await fsGet('settings','loyalty'); STATE.loyaltyConfig = cfg ? { ...DEFAULT_LOYALTY_CONFIG, ...cfg } : { ...DEFAULT_LOYALTY_CONFIG }; }
+  catch(e){ STATE.loyaltyConfig = { ...DEFAULT_LOYALTY_CONFIG }; }
+  return STATE.loyaltyConfig;
+}
+async function renderLoyalty(root){
+  root.innerHTML='';
+  if(!can('loyalty')){ root.innerHTML = accessDeniedBlock(); return; }
+  const cfg = await loadLoyaltyConfig();
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Programme de fidélité'), el('div',{class:'sub'}, `${STATE.customers.length} client(s) suivis`))));
+
+  if(canManagePromotionsLoyalty()){
+    root.appendChild(el('div',{class:'card', style:'padding:16px;margin-bottom:16px;'},
+      el('div',{style:'font-weight:700;margin-bottom:10px;'}, '⚙️ Règles du programme'),
+      el('div',{class:'form-grid'},
+        fld(`FCFA dépensés pour gagner 1 point`,'ly-rate',cfg.pointsPerAmount,'number'),
+        fld(`Valeur d'1 point en FCFA (à la conversion)`,'ly-redeem',cfg.redeemRate,'number')
+      ),
+      el('button',{class:'btn btn-primary btn-sm', onclick: async ()=>{
+        const pointsPerAmount = toInt($('#ly-rate').value)||1000, redeemRate = toInt($('#ly-redeem').value)||0;
+        try{ await fsSet('settings','loyalty', { pointsPerAmount, redeemRate }); STATE.loyaltyConfig = { pointsPerAmount, redeemRate }; toast('Règles de fidélité mises à jour.','success'); }
+        catch(e){ toast(friendlyError(e),'error'); }
+      }}, 'Enregistrer les règles')
+    ));
+  } else {
+    root.appendChild(el('div',{class:'card', style:'padding:14px;margin-bottom:16px;'}, el('div',{class:'text-dim'}, `1 point tous les ${money(cfg.pointsPerAmount)} d'achat · 1 point = ${money(cfg.redeemRate)} de réduction`)));
+  }
+
+  const sorted = STATE.customers.slice().sort((a,b)=> toInt(b.pointsFidelite)-toInt(a.pointsFidelite));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Client'), el('th',{},'Téléphone'), el('th',{},'Points'), el('th',{},'Valeur'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(sorted.length? sorted.map(c=> el('tr',{},
+      el('td',{style:'font-weight:600;'}, `${c.prenom||''} ${c.nom||''}`.trim()||'—'),
+      el('td',{}, c.telephone||'—'),
+      el('td',{}, toInt(c.pointsFidelite||0)),
+      el('td',{}, money(toInt(c.pointsFidelite||0)*cfg.redeemRate)),
+      el('td',{class:'flex gap-6'},
+        canManagePromotionsLoyalty() ? el('button',{class:'btn btn-outline btn-sm', onclick:()=>openLoyaltyAdjustForm(c)}, '✏️ Ajuster') : '',
+        (toInt(c.pointsFidelite||0)>0) ? el('button',{class:'btn btn-accent btn-sm', onclick:()=>redeemLoyaltyPoints(c,cfg)}, '🎁 Convertir') : ''
+      )
+    )) : [el('tr',{}, el('td',{colspan:'5',class:'empty-state'},'Aucun client'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function openLoyaltyAdjustForm(c){
+  const body = el('div',{},
+    el('p',{class:'text-dim', style:'margin-bottom:10px;'}, `Points actuels : ${toInt(c.pointsFidelite||0)}`),
+    el('div',{class:'form-row'}, el('label',{},'Ajustement (+ ou -)'), el('input',{class:'input', id:'ly-adj', type:'number', value:'0'})),
+    el('div',{class:'form-row'}, el('label',{},'Motif'), el('input',{class:'input', id:'ly-reason', placeholder:'Ex : correction, geste commercial…'}))
+  );
+  openModal({ title:`Ajuster les points — ${c.prenom||''} ${c.nom||''}`, body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const delta = toInt($('#ly-adj').value);
+      if(!delta){ toast('Renseignez un ajustement non nul.','warning'); return; }
+      const newPoints = Math.max(0, toInt(c.pointsFidelite||0)+delta);
+      try{
+        await fsUpdate('customers', c.id, { pointsFidelite:newPoints });
+        await fsAdd('loyaltyTransactions', { customerId:c.id, type:'ajustement', points:delta, motif:$('#ly-reason').value.trim(), boutiqueId:currentStoreId(), userId:STATE.user.uid, date:serverTimestamp() });
+        await logAudit('modification','loyalty', c.id, `Points fidélité ajustés de ${delta>0?'+':''}${delta}`);
+        toast('Points mis à jour.','success');
+        await preloadReferenceData(); closeModal(); navigateTo('loyalty');
+      }catch(e){ toast(friendlyError(e),'error'); }
+    }}, 'Enregistrer')
+  ]});
+}
+async function redeemLoyaltyPoints(c,cfg){
+  const points = toInt(c.pointsFidelite||0);
+  const value = points*cfg.redeemRate;
+  const ok = await confirmDialog(`Convertir les ${points} points de ${c.prenom||''} ${c.nom||''} en réduction de ${money(value)}, déduite de sa dette actuelle ?`, {title:'Conversion des points'});
+  if(!ok) return;
+  try{
+    const custRef = doc(db,'customers',c.id);
+    await runTransaction(db, async(tx)=>{
+      const snap = await tx.get(custRef);
+      const debt = moneyPlain(snap.data().soldeDette||0);
+      tx.update(custRef, { pointsFidelite:0, soldeDette: Math.max(0, debt-value) });
+    });
+    await fsAdd('loyaltyTransactions', { customerId:c.id, type:'conversion', points:-points, valeur:value, boutiqueId:currentStoreId(), userId:STATE.user.uid, date:serverTimestamp() });
+    await logAudit('conversion','loyalty', c.id, `${points} points convertis en ${money(value)}`);
+    toast('Points convertis et déduits de la dette du client.','success');
+    await preloadReferenceData(); navigateTo('loyalty');
+  }catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   EMPLOYÉS
+   ========================================================================== */
+async function renderEmployees(root){
+  root.innerHTML='';
+  if(!can('employees')){ root.innerHTML = accessDeniedBlock(); return; }
+  let employees = [];
+  try{ employees = await fsGetAll('employees', ...storeScoped()); }catch(e){ employees = await fsGetAll('employees').catch(()=>[]); }
+  employees.sort((a,b)=>(a.nom||'').localeCompare(b.nom||''));
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Employés'), el('div',{class:'sub'}, `${employees.length} employé(s)`)),
+    el('button',{class:'btn btn-primary', onclick:()=>openEmployeeForm(null)}, '+ Nouvel employé')
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Poste'), el('th',{},'Téléphone'), el('th',{},"Date d'embauche"), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(employees.length? employees.map(emp=> el('tr',{},
+      el('td',{style:'font-weight:600;'}, `${emp.prenom||''} ${emp.nom||''}`.trim()),
+      el('td',{}, emp.poste||'—'),
+      el('td',{}, emp.telephone||'—'),
+      el('td',{}, emp.dateEmbauche? fmtDate(emp.dateEmbauche) : '—'),
+      el('td',{}, emp.actif===false? statusBadge('Inactif','neutral') : statusBadge('Actif','success')),
+      el('td',{class:'flex gap-6'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openEmployeeForm(emp)},'✏️'),
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>toggleEmployeeActive(emp)}, emp.actif===false?'♻️':'🚫'),
+        isGerantOrAbove()? el('button',{class:'btn btn-danger btn-sm', onclick:()=>deleteEmployee(emp)},'Suppr.') : ''
+      )
+    )) : [el('tr',{}, el('td',{colspan:'6',class:'empty-state'},'Aucun employé'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function openEmployeeForm(emp){
+  const isEdit = !!emp;
+  const e0 = emp || { nom:'', prenom:'', telephone:'', poste:'', dateEmbauche:'', salaire:0, notes:'' };
+  const body = el('div',{},
+    el('div',{class:'form-grid'},
+      fld('Prénom *','emp-prenom',e0.prenom), fld('Nom *','emp-nom',e0.nom),
+      fld('Téléphone','emp-tel',e0.telephone), fld('Poste','emp-poste',e0.poste),
+      el('div',{class:'form-row'}, el('label',{},"Date d'embauche"), el('input',{class:'input', type:'date', id:'emp-date', value: e0.dateEmbauche? toDate(e0.dateEmbauche).toISOString().slice(0,10) : ''})),
+      fld('Salaire (FCFA)','emp-salaire',e0.salaire,'number'),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'emp-notes', rows:'2'}, e0.notes||''))
+  );
+  openModal({ title: isEdit?"Modifier l'employé":'Nouvel employé', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const nom = $('#emp-nom').value.trim(), prenom = $('#emp-prenom').value.trim();
+      if(!nom || !prenom){ toast('Le nom et le prénom sont requis.','warning'); return; }
+      const data = { nom, prenom, telephone:$('#emp-tel').value.trim(), poste:$('#emp-poste').value.trim(),
+        dateEmbauche: $('#emp-date').value? Timestamp.fromDate(new Date($('#emp-date').value)) : null,
+        salaire: toInt($('#emp-salaire').value), notes:$('#emp-notes').value.trim(), boutiqueId: currentStoreId(), actif:true };
+      try{
+        if(isEdit){ await fsUpdate('employees', e0.id, data); await logAudit('modification','employees', e0.id, `Employé modifié : ${prenom} ${nom}`); toast('Employé mis à jour.','success'); }
+        else { const id = await fsAdd('employees', data); await logAudit('creation','employees', id, `Employé créé : ${prenom} ${nom}`); toast('Employé créé.','success'); }
+        closeModal(); navigateTo('employees');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+}
+async function toggleEmployeeActive(emp){
+  const willBeActive = emp.actif===false;
+  try{ await fsUpdate('employees', emp.id, { actif: willBeActive }); await logAudit('modification','employees', emp.id, `Employé ${willBeActive?'réactivé':'désactivé'} : ${emp.prenom} ${emp.nom}`); toast(willBeActive?'Employé réactivé.':'Employé désactivé.','success'); navigateTo('employees'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+async function deleteEmployee(emp){
+  const ok = await confirmDialog(`Supprimer l'employé "${emp.prenom} ${emp.nom}" ?`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{ await fsDelete('employees', emp.id); await logAudit('suppression','employees', emp.id, `Employé "${emp.prenom} ${emp.nom}" supprimé`); toast('Employé supprimé.','success'); navigateTo('employees'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   VENDEURS — performance liée aux ventes réelles (vendeurId sur /sales)
+   ========================================================================== */
+async function renderSellers(root){
+  root.innerHTML='';
+  if(!can('sellers')){ root.innerHTML = accessDeniedBlock(); return; }
+  let sellers = [];
+  try{ sellers = await fsGetAll('sellers', ...storeScoped()); }catch(e){ sellers = await fsGetAll('sellers').catch(()=>[]); }
+  sellers.sort((a,b)=>(a.nom||'').localeCompare(b.nom||''));
+  let sales = [];
+  try{ sales = await fsGetAll('sales', ...storeScoped()); }catch(e){ sales=[]; }
+  const range = periodRange('month');
+  const monthSales = sales.filter(s=> s.statut!=='annulee' && inRange(s.date, range));
+  const perfByVendeurId = {};
+  monthSales.forEach(s=>{ const k=s.vendeurId; if(!k) return; perfByVendeurId[k]=perfByVendeurId[k]||{count:0,total:0}; perfByVendeurId[k].count++; perfByVendeurId[k].total += moneyPlain(s.total); });
+
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Vendeurs'), el('div',{class:'sub'}, `${sellers.length} vendeur(s) — performance du mois en cours`)),
+    el('button',{class:'btn btn-primary', onclick:()=>openSellerForm(null)}, '+ Nouveau vendeur')
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Téléphone'), el('th',{},'Compte lié'), el('th',{},'Ventes (mois)'), el('th',{},'CA (mois)'), el('th',{},'Commission'), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(sellers.length? sellers.map(sl=>{
+      const perf = perfByVendeurId[sl.userId] || {count:0,total:0};
+      const commission = Math.round(perf.total * toInt(sl.tauxCommission||0)/100);
+      return el('tr',{},
+        el('td',{style:'font-weight:600;'}, `${sl.prenom||''} ${sl.nom||''}`.trim()),
+        el('td',{}, sl.telephone||'—'),
+        el('td',{}, sl.userId? el('span',{class:'badge badge-info'},'Lié') : el('span',{class:'badge badge-neutral'},'Non lié')),
+        el('td',{}, perf.count),
+        el('td',{}, money(perf.total)),
+        el('td',{}, `${toInt(sl.tauxCommission||0)}% (${money(commission)})`),
+        el('td',{}, sl.actif===false? statusBadge('Inactif','neutral') : statusBadge('Actif','success')),
+        el('td',{class:'flex gap-6'},
+          el('button',{class:'btn btn-outline btn-sm', onclick:()=>openSellerForm(sl)},'✏️'),
+          isGerantOrAbove()? el('button',{class:'btn btn-danger btn-sm', onclick:()=>deleteSeller(sl)},'Suppr.') : ''
+        )
+      );
+    }) : [el('tr',{}, el('td',{colspan:'8',class:'empty-state'},'Aucun vendeur'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+async function openSellerForm(sl){
+  const isEdit = !!sl;
+  const s0 = sl || { nom:'', prenom:'', telephone:'', tauxCommission:0, userId:'', notes:'' };
+  let users = [];
+  try{ users = await fsGetAll('users', ...storeScoped()); }catch(e){ users=[]; }
+  const body = el('div',{},
+    el('div',{class:'form-grid'},
+      fld('Prénom *','sl-prenom',s0.prenom), fld('Nom *','sl-nom',s0.nom),
+      fld('Téléphone','sl-tel',s0.telephone), fld('Taux de commission (%)','sl-comm',s0.tauxCommission,'number')
+    ),
+    users.length ? el('div',{class:'form-row'}, el('label',{},'Compte utilisateur lié (pour le suivi automatique des ventes)'),
+      el('select',{class:'input', id:'sl-user'}, el('option',{value:''},'— Aucun —'), ...users.map(u=>el('option',{value:u.id, selected:s0.userId===u.id?'selected':null}, `${u.prenom||''} ${u.nom||''} (${u.email||''})`)))) : el('div',{class:'text-faint',style:'font-size:12px;'},'Aucun compte utilisateur trouvé pour cette boutique.'),
+    el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'sl-notes', rows:'2'}, s0.notes||''))
+  );
+  openModal({ title: isEdit?'Modifier le vendeur':'Nouveau vendeur', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const nom = $('#sl-nom').value.trim(), prenom = $('#sl-prenom').value.trim();
+      if(!nom || !prenom){ toast('Le nom et le prénom sont requis.','warning'); return; }
+      const data = { nom, prenom, telephone:$('#sl-tel').value.trim(), tauxCommission: toInt($('#sl-comm').value), userId: users.length ? ($('#sl-user').value||null) : (s0.userId||null), notes:$('#sl-notes').value.trim(), boutiqueId: currentStoreId(), actif:true };
+      try{
+        if(isEdit){ await fsUpdate('sellers', s0.id, data); await logAudit('modification','sellers', s0.id, `Vendeur modifié : ${prenom} ${nom}`); toast('Vendeur mis à jour.','success'); }
+        else { const id = await fsAdd('sellers', data); await logAudit('creation','sellers', id, `Vendeur créé : ${prenom} ${nom}`); toast('Vendeur créé.','success'); }
+        closeModal(); navigateTo('sellers');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+}
+async function deleteSeller(sl){
+  const ok = await confirmDialog(`Supprimer le vendeur "${sl.prenom} ${sl.nom}" ?`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{ await fsDelete('sellers', sl.id); await logAudit('suppression','sellers', sl.id, `Vendeur "${sl.prenom} ${sl.nom}" supprimé`); toast('Vendeur supprimé.','success'); navigateTo('sellers'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   MISSIONS MARCHÉ
+   ========================================================================== */
+const MISSION_STATUTS = [['planifiee','Planifiée'],['en_cours','En cours'],['terminee','Terminée'],['annulee','Annulée']];
+async function renderMissions(root){
+  root.innerHTML='';
+  if(!can('missions')){ root.innerHTML = accessDeniedBlock(); return; }
+  let missions = [];
+  try{ missions = await fsGetAllSorted('marketMissions', [], 'dateDebut', 'desc', 200); }
+  catch(e){ missions = await fsGetAll('marketMissions', ...storeScoped()).catch(()=>[]); }
+  root.appendChild(el('div',{class:'section-head'},
+    el('div',{}, el('h2',{},'Missions marché'), el('div',{class:'sub'}, `${missions.length} mission(s)`)),
+    el('button',{class:'btn btn-primary', onclick:()=>openMissionForm(null)}, '+ Nouvelle mission')
+  ));
+  const card = el('div',{class:'card'}, el('div',{class:'table-wrap'}));
+  const table = el('table',{},
+    el('thead',{}, el('tr',{}, el('th',{},'Titre'), el('th',{},'Assigné à'), el('th',{},'Période'), el('th',{},'Objectif'), el('th',{},'Résultat'), el('th',{},'Statut'), el('th',{},'Actions'))),
+    el('tbody',{}, ...(missions.length? missions.map(m=> el('tr',{},
+      el('td',{style:'font-weight:600;'}, m.titre),
+      el('td',{}, m.assigneNom||'—'),
+      el('td',{}, `${m.dateDebut?fmtDate(m.dateDebut):'—'} → ${m.dateFin?fmtDate(m.dateFin):'—'}`),
+      el('td',{}, money(m.objectifMontant)),
+      el('td',{}, money(m.resultatMontant)),
+      el('td',{}, el('span',{class:`badge ${m.statut==='terminee'?'badge-success':m.statut==='en_cours'?'badge-info':m.statut==='annulee'?'badge-danger':'badge-neutral'}`}, MISSION_STATUTS.find(x=>x[0]===m.statut)?.[1]||m.statut||'—')),
+      el('td',{class:'flex gap-6'},
+        el('button',{class:'btn btn-outline btn-sm', onclick:()=>openMissionForm(m)},'✏️'),
+        el('button',{class:'btn btn-danger btn-sm', onclick:()=>deleteMission(m)},'Suppr.')
+      )
+    )) : [el('tr',{}, el('td',{colspan:'7',class:'empty-state'},'Aucune mission'))]))
+  );
+  card.querySelector('.table-wrap').appendChild(table);
+  root.appendChild(card);
+}
+function openMissionForm(m){
+  const isEdit = !!m;
+  const m0 = m || { titre:'', description:'', assigneNom:'', dateDebut:'', dateFin:'', objectifMontant:0, resultatMontant:0, statut:'planifiee', notes:'' };
+  const body = el('div',{},
+    fld('Titre de la mission *','ms-titre',m0.titre),
+    el('div',{class:'form-row'}, el('label',{},'Description'), el('textarea',{class:'input', id:'ms-desc', rows:'2'}, m0.description||'')),
+    el('div',{class:'form-grid'},
+      fld('Assigné à (nom)','ms-assign',m0.assigneNom),
+      selectFld('Statut','ms-statut',MISSION_STATUTS, m0.statut),
+    ),
+    el('div',{class:'form-grid'},
+      el('div',{class:'form-row'}, el('label',{},'Date de début'), el('input',{class:'input', type:'date', id:'ms-debut', value: m0.dateDebut? toDate(m0.dateDebut).toISOString().slice(0,10) : ''})),
+      el('div',{class:'form-row'}, el('label',{},'Date de fin'), el('input',{class:'input', type:'date', id:'ms-fin', value: m0.dateFin? toDate(m0.dateFin).toISOString().slice(0,10) : ''})),
+    ),
+    el('div',{class:'form-grid'},
+      fld('Objectif (FCFA)','ms-objectif',m0.objectifMontant,'number'),
+      fld('Résultat (FCFA)','ms-resultat',m0.resultatMontant,'number'),
+    ),
+    el('div',{class:'form-row'}, el('label',{},'Notes'), el('textarea',{class:'input', id:'ms-notes', rows:'2'}, m0.notes||''))
+  );
+  openModal({ title: isEdit?'Modifier la mission':'Nouvelle mission', body, footButtons:[
+    el('button',{class:'btn btn-outline', onclick:closeModal},'Annuler'),
+    el('button',{class:'btn btn-primary', onclick: async ()=>{
+      const titre = $('#ms-titre').value.trim();
+      if(!titre){ toast('Le titre est requis.','warning'); return; }
+      const data = {
+        titre, description:$('#ms-desc').value.trim(), assigneNom:$('#ms-assign').value.trim(), statut:$('#ms-statut').value,
+        dateDebut: $('#ms-debut').value? Timestamp.fromDate(new Date($('#ms-debut').value)) : null,
+        dateFin: $('#ms-fin').value? Timestamp.fromDate(new Date($('#ms-fin').value)) : null,
+        objectifMontant: toInt($('#ms-objectif').value), resultatMontant: toInt($('#ms-resultat').value),
+        notes:$('#ms-notes').value.trim(), boutiqueId: currentStoreId()
+      };
+      try{
+        if(isEdit){ await fsUpdate('marketMissions', m0.id, data); await logAudit('modification','missions', m0.id, `Mission modifiée : ${titre}`); toast('Mission mise à jour.','success'); }
+        else { const id = await fsAdd('marketMissions', data); await logAudit('creation','missions', id, `Mission créée : ${titre}`); toast('Mission créée.','success'); }
+        closeModal(); navigateTo('missions');
+      }catch(error){ toast(friendlyError(error),'error'); }
+    }}, isEdit?'Enregistrer':'Créer')
+  ]});
+}
+async function deleteMission(m){
+  const ok = await confirmDialog(`Supprimer la mission "${m.titre}" ?`, {title:'Suppression', danger:true});
+  if(!ok) return;
+  try{ await fsDelete('marketMissions', m.id); await logAudit('suppression','missions', m.id, `Mission "${m.titre}" supprimée`); toast('Mission supprimée.','success'); navigateTo('missions'); }
+  catch(e){ toast(friendlyError(e),'error'); }
+}
+
+/* ==========================================================================
+   RAPPORTS — agrégation de données réelles (ventes, dépenses, achats)
+   ========================================================================== */
+async function renderReports(root){
+  root.innerHTML='';
+  if(!can('reports')){ root.innerHTML = accessDeniedBlock(); return; }
+  STATE._reportPeriod = STATE._reportPeriod || 'month';
+  const range = periodRange(STATE._reportPeriod);
+
+  root.appendChild(el('div',{class:'section-head'}, el('div',{}, el('h2',{},'Rapports'), el('div',{class:'sub'},'Vue consolidée calculée à partir des données réelles du système'))));
+  root.appendChild(el('div',{class:'toolbar'}, periodSelect(STATE._reportPeriod, v=>{ STATE._reportPeriod=v; navigateTo('reports'); })));
+
+  const [salesAll, expensesAll, purchasesAll] = await Promise.all([
+    fsGetAll('sales', ...storeScoped()).catch(()=>[]),
+    fsGetAll('expenses', ...storeScoped()).catch(()=>[]),
+    fsGetAll('purchases', ...storeScoped()).catch(()=>[])
+  ]);
+  const sales = salesAll.filter(s=> s.statut!=='annulee' && inRange(s.date, range));
+  const expenses = expensesAll.filter(x=> inRange(x.date, range));
+  const purchases = purchasesAll.filter(p=> p.statut!=='annulee' && inRange(p.date, range));
+
+  const ca = sales.reduce((a,s)=>a+moneyPlain(s.total),0);
+  const coutAchatVentes = sales.reduce((a,s)=> a + (s.items||[]).reduce((b,i)=>b+toInt(i.prixAchat)*toInt(i.quantite),0), 0);
+  const totalExpenses = expenses.reduce((a,x)=>a+moneyPlain(x.montant),0);
+  const totalPurchases = purchases.reduce((a,p)=>a+moneyPlain(p.total),0);
+  const marge = ca - coutAchatVentes - totalExpenses;
+
+  root.appendChild(el('div',{class:'stat-grid'},
+    el('div',{class:'stat-card'}, el('div',{class:'label'},"💰 Chiffre d'affaires"), el('div',{class:'value'}, money(ca))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'🧾 Ventes'), el('div',{class:'value'}, sales.length)),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'💸 Dépenses'), el('div',{class:'value'}, money(totalExpenses))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'🚚 Achats'), el('div',{class:'value'}, money(totalPurchases))),
+    el('div',{class:'stat-card'}, el('div',{class:'label'},'📈 Marge nette estimée'), el('div',{class:'value', style:`color:${marge>=0?'var(--success)':'var(--danger)'};`}, money(marge)))
+  ));
+
+  const byDay = {};
+  sales.forEach(s=>{ const d = toDateSafe(s.date); const k = d.toISOString().slice(0,10); byDay[k]=(byDay[k]||0)+moneyPlain(s.total); });
+  const days = Object.keys(byDay).sort();
+  root.appendChild(el('div',{class:'card', style:'padding:16px;margin-bottom:20px;'}, el('div',{style:'font-weight:700;margin-bottom:10px;'},'Ventes par jour'), el('canvas',{id:'report-chart', height:'90'})));
+
+  const byProduct = {};
+  sales.forEach(s=> (s.items||[]).forEach(i=>{ byProduct[i.productId] = byProduct[i.productId] || {nom:i.nom, qte:0, ca:0}; byProduct[i.productId].qte += toInt(i.quantite); byProduct[i.productId].ca += toInt(i.prixVente)*toInt(i.quantite); }));
+  const topProducts = Object.values(byProduct).sort((a,b)=>b.ca-a.ca).slice(0,8);
+
+  const byCustomer = {};
+  sales.forEach(s=>{ if(!s.customerId) return; byCustomer[s.customerId] = (byCustomer[s.customerId]||0)+moneyPlain(s.total); });
+  const topCustomers = Object.entries(byCustomer).map(([id,ttl])=>{ const c = STATE.customers.find(x=>x.id===id)||{}; return { total:ttl, nom:c.nom, prenom:c.prenom }; }).sort((a,b)=>b.total-a.total).slice(0,8);
+
+  const grid = el('div',{class:'form-grid'});
+  grid.appendChild(el('div',{class:'card', style:'padding:16px;'},
+    el('div',{style:'font-weight:700;margin-bottom:10px;'},'🏆 Top produits vendus'),
+    topProducts.length ? el('table',{}, el('thead',{},el('tr',{},el('th',{},'Produit'),el('th',{},'Qté'),el('th',{},'CA'))),
+      el('tbody',{}, ...topProducts.map(p=>el('tr',{},el('td',{},p.nom),el('td',{},p.qte),el('td',{},money(p.ca)))))
+    ) : el('div',{class:'empty-state'},'Aucune vente sur cette période')
+  ));
+  grid.appendChild(el('div',{class:'card', style:'padding:16px;'},
+    el('div',{style:'font-weight:700;margin-bottom:10px;'},'👑 Meilleurs clients'),
+    topCustomers.length ? el('table',{}, el('thead',{},el('tr',{},el('th',{},'Client'),el('th',{},'CA'))),
+      el('tbody',{}, ...topCustomers.map(c=>el('tr',{},el('td',{},`${c.prenom||''} ${c.nom||''}`.trim()||'Client de passage'),el('td',{},money(c.total)))))
+    ) : el('div',{class:'empty-state'},'Aucun client sur cette période')
+  ));
+  root.appendChild(grid);
+
+  setTimeout(()=>{
+    const canvas = $('#report-chart'); if(!canvas || typeof Chart==='undefined') return;
+    if(STATE._reportChartInstance){ try{ STATE._reportChartInstance.destroy(); }catch(e){} }
+    STATE._reportChartInstance = new Chart(canvas, {
+      type:'bar',
+      data:{ labels: days.map(d=> new Date(d).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})), datasets:[{ label:'Ventes (FCFA)', data: days.map(d=>byDay[d]), backgroundColor:'#0f6e66' }] },
+      options:{ responsive:true, plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true} } }
+    });
+  }, 30);
+}
+
+
 const SECTION_RENDERERS = {
   dashboard: renderDashboard,
   pos: renderPOS,
